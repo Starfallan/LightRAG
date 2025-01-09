@@ -260,18 +260,17 @@ def init_rag():
 st.sidebar.markdown("##### Activity Log")
 activity_container = st.sidebar.container()
 
-# Add background image
+# 添加特定对话框的样式
 st.markdown(
-        f"""
-        <style>
-        .stApp {{
-            background-image: url("https://i-blog.csdnimg.cn/direct/567139f1a36e4564abc63ce5c12b6271.jpeg");
-            background-size: cover;
-        }}
-        </style>
-        """,
-        unsafe_allow_html=True
-    )
+    """
+<style>
+div[data-testid="stDialog"] div[role="dialog"]:has(.large-dialog) {
+    width: 80vw;
+}
+</style>
+""",
+    unsafe_allow_html=True,
+)
 
 # Add after the constants but before get_embedding_config
 def add_activity_log(message: str):
@@ -957,9 +956,12 @@ def show_delete_dialog():
 # 在侧边栏添加删除按钮
 st.sidebar.button("🗑️ 删除记录", on_click=show_delete_dialog)
 
-@st.dialog("View Documents", width="large")
+@st.dialog("View Documents")
 def show_documents_dialog():
     """对话框用于显示已插入的文档信息."""
+    # 添加类名标记，使样式生效
+    st.html("<span class='large-dialog'></span>")
+    
     st.markdown("### 已插入的文档信息")
     
     # 首先检查是否有有效的API key
@@ -1059,7 +1061,7 @@ def show_documents_dialog():
             st.dataframe(
                 df,
                 use_container_width=True,
-                height=500,
+                height=400,
                 column_config={
                     "实体名称": st.column_config.TextColumn(width="medium"),
                     "实体类型": st.column_config.TextColumn(width="small"),
