@@ -263,14 +263,14 @@ activity_container = st.sidebar.container()
 # 添加特定对话框的样式
 st.markdown(
     """
-<style>
+        <style>
 div[data-testid="stDialog"] div[role="dialog"]:has(.large-dialog) {
     width: 80vw;
 }
-</style>
-""",
+        </style>
+        """,
     unsafe_allow_html=True,
-)
+    )
 
 # Add after the constants but before get_embedding_config
 def add_activity_log(message: str):
@@ -293,10 +293,226 @@ def add_activity_log(message: str):
         # Fallback if container not available
         st.sidebar.markdown(f"```\n{message}\n```")
 
-# Define all dialog functions first
+# 在这里定义所有对话框函数
+@st.dialog("View Documents")
+def show_documents_dialog():
+    """对话框用于显示已插入的文档信息."""
+    # 添加类名标记，使样式生效
+    st.html("<span class='large-dialog'></span>")
+    
+    st.markdown("### 已插入的文档信息")
+    
+    # 首先检查是否有有效的API key
+    api_key = get_api_key()
+    if not api_key:
+        st.error("请先在设置中提供OpenAI API密钥.")
+        return
+        
+    tab1, tab2 = st.tabs(["实体信息", "文档统计"])
+    
+    # 读取图文件
+    graph_path = "./dickens/graph_chunk_entity_relation.graphml"
+    if not os.path.exists(graph_path):
+        st.markdown("> [!graph] ⚠ **暂无知识图谱数据.** 请先插入一些文档.")
+        return
+        
+    try:
+        graph = nx.read_graphml(graph_path)
+    except Exception as e:
+        logger.error(f"读取图文件时出错: {str(e)}")
+        add_activity_log(f"[!] 读取图文件失败: {str(e)}")
+        st.error(f"读取图文件时出错: {str(e)}")
+        return
+    
+    with tab1:
+        try:
+            # 提取所有节点信息
+            nodes_info = []
+            for node, data in graph.nodes(data=True):
+                # 处理节点名称 - 移除外层引号
+                node_name = node.strip('"')
+                
+                # 处理类型 - 获取引号内的完整内容
+                raw_type = data.get('entity_type', '')
+                if raw_type.startswith('"') and raw_type.endswith('"'):
+                    node_type = raw_type[1:-1]  # 移除首尾的引号
+                else:
+                    node_type = raw_type
+                
+                # 处理描述 - 获取引号内的完整内容
+                raw_desc = data.get('description', '')
+                if raw_desc.startswith('"') and raw_desc.endswith('"'):
+                    node_desc = raw_desc[1:-1]  # 移除首尾的引号
+                else:
+                    node_desc = raw_desc
+                    
+                # 处理多个描述的情况
+                if '<SEP>' in node_desc:
+                    node_desc = node_desc.split('<SEP>')[0]
+                
+                # 获取来源chunk ID
+                raw_chunk = data.get('source_id', '')
+                if raw_chunk.startswith('"') and raw_chunk.endswith('"'):
+                    source_chunk = raw_chunk[1:-1]  # 移除首尾的引号
+                else:
+                    source_chunk = raw_chunk
+                    
+                if '<SEP>' in source_chunk:
+                    source_chunk = source_chunk.split('<SEP>')[0]
+                
+                node_info = {
+                    '实体名称': node_name,
+                    '实体类型': node_type,
+                    '实体描述': node_desc,
+                    '来源': source_chunk
+                }
+                nodes_info.append(node_info)
+            
+            if not nodes_info:
+                st.warning("暂无节点信息")
+                return
+                
+            # 创建DataFrame并显示
+            import pandas as pd
+            df = pd.DataFrame(nodes_info)
+            
+            # 添加搜索和过滤功能
+            col1, col2 = st.columns([2, 2])
+            with col1:
+                search_term = st.text_input("🔍 搜索实体名称", "")
+            with col2:
+                selected_type = st.selectbox(
+                    "按实体类型筛选",
+                    ["全部"] + sorted(list(set(df['实体类型'].unique())))
+                )
+            
+            # 应用过滤
+            if search_term:
+                df = df[df['实体名称'].str.contains(search_term, case=False, na=False)]
+            if selected_type != "全部":
+                df = df[df['实体类型'] == selected_type]
+            
+            # 显示结果计数
+            st.markdown(f"##### 共找到 {len(df)} 个实体")
+            
+            # 使用st.dataframe显示，设置合适的列宽和高度
+            st.dataframe(
+                df,
+                use_container_width=True,
+                height=400,
+                column_config={
+                    "实体名称": st.column_config.TextColumn(width="medium"),
+                    "实体类型": st.column_config.TextColumn(width="small"),
+                    "实体描述": st.column_config.TextColumn(width="large"),
+                    "来源": st.column_config.TextColumn(width="small")
+                }
+            )
+                
+        except Exception as e:
+            logger.error(f"获取节点信息时出错: {str(e)}")
+            add_activity_log(f"[!] 获取节点信息失败: {str(e)}")
+            st.error(f"获取节点信息时出错: {str(e)}")
+    
+    with tab2:
+        try:
+            # 计算统计信息
+            total_nodes = graph.number_of_nodes()
+            total_edges = graph.number_of_edges()
+            avg_degree = round(sum(dict(graph.degree()).values()) / total_nodes, 2) if total_nodes > 0 else 0
+            
+            # 显示统计信息
+            col1, col2, col3 = st.columns(3)
+            with col1:
+                st.metric("总节点数", total_nodes)
+            with col2:
+                st.metric("总边数", total_edges)
+            with col3:
+                st.metric("平均度数", avg_degree)
+            
+            # 显示节点类型分布
+            node_types = {}
+            for _, data in graph.nodes(data=True):
+                raw_type = data.get('entity_type', '')
+                if raw_type.startswith('"') and raw_type.endswith('"'):
+                    node_type = raw_type[1:-1]  # 移除首尾的引号
+                else:
+                    node_type = raw_type
+                node_types[node_type] = node_types.get(node_type, 0) + 1
+            
+            st.markdown("#### 节点类型分布")
+            
+            # 创建类型分布的DataFrame
+            type_df = pd.DataFrame(
+                list(node_types.items()), 
+                columns=['类型', '数量']
+            ).sort_values('数量', ascending=False)
+            
+            # 显示表格和图表
+            col1, col2 = st.columns([1, 2])
+            with col1:
+                st.dataframe(type_df, use_container_width=True)
+            with col2:
+                st.bar_chart(type_df.set_index('类型'))
+            
+        except Exception as e:
+            logger.error(f"获取统计信息时出错: {str(e)}")
+            add_activity_log(f"[!] 获取统计信息失败: {str(e)}")
+            st.error(f"获取统计信息时出错: {str(e)}")
+
+@st.dialog("Delete Records")
+def show_delete_dialog():
+    """对话框用于删除已插入的记录."""
+    st.markdown("### 删除记录")
+    
+    # 首先检查是否有有效的API key
+    api_key = get_api_key()
+    if not api_key:
+        st.error("请先在设置中提供OpenAI API密钥.")
+        return
+        
+    tab1, tab2 = st.tabs(["按实体名称删除", "按文档ID删除"])
+    
+    with tab1:
+        entity_name = st.text_input(
+            "实体名称:",
+            help="输入要删除的实体名称"
+        )
+        
+        if st.button("删除实体", key="delete_entity"):
+            if entity_name:
+                try:
+                    st.session_state.rag.delete_by_entity(entity_name)
+                    add_activity_log(f"[+] 已删除实体: {entity_name}")
+                    st.success(f"成功删除实体: {entity_name}")
+                except Exception as e:
+                    logger.error(f"删除实体时出错: {str(e)}")
+                    add_activity_log(f"[!] 删除实体失败: {str(e)}")
+                    st.error(f"删除实体时出错: {str(e)}")
+            else:
+                st.warning("请输入要删除的实体名称")
+    
+    with tab2:
+        doc_id = st.text_input(
+            "文档ID:",
+            help="输入要删除的文档ID"
+        )
+        
+        if st.button("删除文档", key="delete_doc"):
+            if doc_id:
+                try:
+                    st.session_state.rag.delete_by_doc_id(doc_id)
+                    add_activity_log(f"[+] 已删除文档: {doc_id}")
+                    st.success(f"成功删除文档: {doc_id}")
+                except Exception as e:
+                    logger.error(f"删除文档时出错: {str(e)}")
+                    add_activity_log(f"[!] 删除文档失败: {str(e)}")
+                    st.error(f"删除文档时出错: {str(e)}")
+            else:
+                st.warning("请输入要删除的文档ID")
+
 @st.dialog("Insert Records")
 def show_insert_dialog():
-    """Dialog for inserting records from various sources."""
+    """对话框用于插入记录."""
     # First check if we have a valid API key
     api_key = get_api_key()
     if not api_key:
@@ -396,7 +612,7 @@ def show_insert_dialog():
 
 @st.dialog("Settings")
 def show_settings_dialog():
-    """Dialog for configuring LightRAG settings."""
+    """对话框用于配置设置."""
     # Update model selection dropdowns with separate options
     st.session_state.settings["llm_model"] = st.selectbox(
         "LLM Model:",
@@ -433,9 +649,9 @@ def show_settings_dialog():
         handle_settings_update()
         st.rerun()
 
-@st.dialog("Knowledge Graph Stats", width="large")
+@st.dialog("Knowledge Graph Stats")
 def show_kg_stats_dialog():
-    """Dialog showing detailed knowledge graph statistics and visualization."""
+    """对话框用于显示知识图谱统计信息."""
     try:
         # Use the correct filename in dickens directory
         graph_path = "./dickens/graph_chunk_entity_relation.graphml"
@@ -530,95 +746,9 @@ def show_kg_stats_dialog():
         logger.error(f"Error getting graph stats: {str(e)}")
         st.markdown(f"❌ **Error getting graph stats:** {str(e)}")
 
-# Move this function before the dialog definitions
-def handle_chat_download():
-    """Download chat history as markdown."""
-    if not st.session_state.messages:
-        st.error("No messages to download yet! Start a conversation first.", icon="ℹ️")
-        return
-        
-    from time import strftime
-    
-    # Create markdown content
-    md_lines = [
-        "# LightRAG Chat Session\n",
-        f"*Exported on {strftime('%Y-%m-%d %H:%M:%S')}*\n",
-        "\n## Settings\n",
-        f"- Search Mode: {st.session_state.settings['search_mode']}",
-        f"- LLM Model: {st.session_state.settings['llm_model']}",
-        f"- Embedding Model: {st.session_state.settings['embedding_model']}",
-        f"- Temperature: {st.session_state.settings['temperature']}",
-        f"- System Prompt: {st.session_state.settings['system_prompt']}\n",
-        "\n## Conversation\n"
-    ]
-    
-    # Add messages
-    for msg in st.session_state.messages:
-        role = "User" if msg["role"] == "user" else "Assistant"
-        md_lines.append(f"\n### {role} ({msg['metadata'].get('timestamp', 'N/A')})")
-        md_lines.append(f"\n{msg['content']}\n")
-        
-        if msg["role"] == "assistant" and "metadata" in msg:
-            metadata = msg["metadata"]
-            if "query_info" in metadata:
-                md_lines.append(f"\n`> [!query] {metadata['query_info']}`")
-            if "error" in metadata:
-                md_lines.append(f"\n> ⚠️ Error: {metadata['error']}")
-    
-    md_content = "\n".join(md_lines)
-    
-    st.download_button(
-        label="Download Chat",
-        data=md_content,
-        file_name=f"chat_session_{strftime('%Y%m%d_%H%M%S')}.md",
-        mime="text/markdown",
-        key="download_chat"
-    )
-
-def get_all_records_from_graph():
-    """Extract records from the knowledge graph."""
-    try:
-        graph_path = "./dickens/graph_chunk_entity_relation.graphml"
-        if not os.path.exists(graph_path):
-            return []
-            
-        graph = nx.read_graphml(graph_path)
-        
-        records = []
-        for node in graph.nodes(data=True):
-            node_id, data = node
-            if data.get('type') == 'chunk':
-                record = {
-                    'id': node_id,
-                    'content': data.get('content', ''),
-                    'metadata': {
-                        'type': data.get('type', ''),
-                        'timestamp': data.get('timestamp', ''),
-                        'relationships': []
-                    }
-                }
-                
-                # Get relationships
-                for edge in graph.edges(node_id, data=True):
-                    source, target, edge_data = edge
-                    if edge_data:
-                        record['metadata']['relationships'].append({
-                            'target': target,
-                            'type': edge_data.get('type', ''),
-                            'weight': edge_data.get('weight', 1.0)
-                        })
-                
-                records.append(record)
-        
-        return records
-        
-    except Exception as e:
-        logger.error(f"Error reading graph file: {str(e)}")
-        return []
-
 @st.dialog("Download Options")
 def show_download_dialog():
-    """Dialog for downloading chat history and records."""
+    """对话框用于下载选项."""
     st.markdown("### Download Options")
     
     tab1, tab2 = st.tabs(["Chat History", "Inserted Records"])
@@ -667,24 +797,50 @@ def show_download_dialog():
                 st.error(f"Error downloading records: {str(e)}")
                 add_activity_log(f"[!] Download error: {str(e)}")
 
-# Now add the buttons after all dialogs are defined
-col1, col2, col3, col4 = st.columns(4)
+# 在侧边栏添加功能按钮
+st.sidebar.markdown("### 功能菜单")
 
-with col1:
-    if st.button("➕", help="Insert Records"):
-        show_insert_dialog()
+# Insert Records 按钮
+st.sidebar.button("➕ 插入记录", 
+    help="插入新的文档记录",
+    on_click=show_insert_dialog,
+    use_container_width=True
+)
 
-with col2:
-    if st.button("⚙", help="Settings"):
-        show_settings_dialog()
+# Settings 按钮
+st.sidebar.button("⚙ 系统设置", 
+    help="配置系统参数",
+    on_click=show_settings_dialog,
+    use_container_width=True
+)
 
-with col3:
-    if st.button("፨", help="Knowledge Graph Stats"):
-        show_kg_stats_dialog()
+# Knowledge Graph Stats 按钮
+st.sidebar.button("፨ 知识图谱统计", 
+    help="查看知识图谱统计信息",
+    on_click=show_kg_stats_dialog,
+    use_container_width=True
+)
 
-with col4:
-    if st.button("⬇", help="Download Options"):
-        show_download_dialog()
+# Download Options 按钮
+st.sidebar.button("⬇ 下载选项", 
+    help="下载数据和聊天记录",
+    on_click=show_download_dialog,
+    use_container_width=True
+)
+
+# 查看文档按钮
+st.sidebar.button("📚 查看文档", 
+    help="查看已插入的文档信息",
+    on_click=show_documents_dialog,
+    use_container_width=True
+)
+
+# 删除记录按钮
+st.sidebar.button("🗑️ 删除记录", 
+    help="删除已插入的记录",
+    on_click=show_delete_dialog,
+    use_container_width=True
+)
 
 # Add this before the chat history display section
 def format_chat_message(content, metadata=None):
@@ -899,227 +1055,87 @@ def handle_insert(content: str, tags: str = ""):
         add_activity_log(f"[!] Insert error: {str(e)}")
         st.error(error_msg)
 
-@st.dialog("Delete Records")
-def show_delete_dialog():
-    """对话框用于删除已插入的记录."""
-    st.markdown("### 删除记录")
-    
-    # 首先检查是否有有效的API key
-    api_key = get_api_key()
-    if not api_key:
-        st.error("请先在设置中提供OpenAI API密钥.")
-        return
-        
-    tab1, tab2 = st.tabs(["按实体名称删除", "按文档ID删除"])
-    
-    with tab1:
-        entity_name = st.text_input(
-            "实体名称:",
-            help="输入要删除的实体名称"
-        )
-        
-        if st.button("删除实体", key="delete_entity"):
-            if entity_name:
-                try:
-                    st.session_state.rag.delete_by_entity(entity_name)
-                    add_activity_log(f"[+] 已删除实体: {entity_name}")
-                    st.success(f"成功删除实体: {entity_name}")
-                except Exception as e:
-                    logger.error(f"删除实体时出错: {str(e)}")
-                    add_activity_log(f"[!] 删除实体失败: {str(e)}")
-                    st.error(f"删除实体时出错: {str(e)}")
-            else:
-                st.warning("请输入要删除的实体名称")
-    
-    with tab2:
-        doc_id = st.text_input(
-            "文档ID:",
-            help="输入要删除的文档ID"
-        )
-        
-        if st.button("删除文档", key="delete_doc"):
-            if doc_id:
-                try:
-                    st.session_state.rag.delete_by_doc_id(doc_id)
-                    add_activity_log(f"[+] 已删除文档: {doc_id}")
-                    st.success(f"成功删除文档: {doc_id}")
-                except Exception as e:
-                    logger.error(f"删除文档时出错: {str(e)}")
-                    add_activity_log(f"[!] 删除文档失败: {str(e)}")
-                    st.error(f"删除文档时出错: {str(e)}")
-            else:
-                st.warning("请输入要删除的文档ID")
-
-# 在主界面添加删除按钮
-# ... existing code ...
-
-# 在侧边栏添加删除按钮
-st.sidebar.button("🗑️ 删除记录", on_click=show_delete_dialog)
-
-@st.dialog("View Documents")
-def show_documents_dialog():
-    """对话框用于显示已插入的文档信息."""
-    # 添加类名标记，使样式生效
-    st.html("<span class='large-dialog'></span>")
-    
-    st.markdown("### 已插入的文档信息")
-    
-    # 首先检查是否有有效的API key
-    api_key = get_api_key()
-    if not api_key:
-        st.error("请先在设置中提供OpenAI API密钥.")
-        return
-        
-    tab1, tab2 = st.tabs(["实体信息", "文档统计"])
-    
-    # 读取图文件
-    graph_path = "./dickens/graph_chunk_entity_relation.graphml"
-    if not os.path.exists(graph_path):
-        st.markdown("> [!graph] ⚠ **暂无知识图谱数据.** 请先插入一些文档.")
-        return
-        
+def get_all_records_from_graph():
+    """Extract records from the knowledge graph."""
     try:
+        graph_path = "./dickens/graph_chunk_entity_relation.graphml"
+        if not os.path.exists(graph_path):
+            return []
+            
         graph = nx.read_graphml(graph_path)
+        
+        records = []
+        for node in graph.nodes(data=True):
+            node_id, data = node
+            if data.get('type') == 'chunk':
+                record = {
+                    'id': node_id,
+                    'content': data.get('content', ''),
+                    'metadata': {
+                        'type': data.get('type', ''),
+                        'timestamp': data.get('timestamp', ''),
+                        'relationships': []
+                    }
+                }
+                
+                # Get relationships
+                for edge in graph.edges(node_id, data=True):
+                    source, target, edge_data = edge
+                    if edge_data:
+                        record['metadata']['relationships'].append({
+                            'target': target,
+                            'type': edge_data.get('type', ''),
+                            'weight': edge_data.get('weight', 1.0)
+                        })
+                
+                records.append(record)
+        
+        return records
+        
     except Exception as e:
-        logger.error(f"读取图文件时出错: {str(e)}")
-        add_activity_log(f"[!] 读取图文件失败: {str(e)}")
-        st.error(f"读取图文件时出错: {str(e)}")
-        return
-    
-    with tab1:
-        try:
-            # 提取所有节点信息
-            nodes_info = []
-            for node, data in graph.nodes(data=True):
-                # 处理节点名称 - 移除外层引号
-                node_name = node.strip('"')
-                
-                # 处理类型 - 获取引号内的完整内容
-                raw_type = data.get('entity_type', '')
-                if raw_type.startswith('"') and raw_type.endswith('"'):
-                    node_type = raw_type[1:-1]  # 移除首尾的引号
-                else:
-                    node_type = raw_type
-                
-                # 处理描述 - 获取引号内的完整内容
-                raw_desc = data.get('description', '')
-                if raw_desc.startswith('"') and raw_desc.endswith('"'):
-                    node_desc = raw_desc[1:-1]  # 移除首尾的引号
-                else:
-                    node_desc = raw_desc
-                    
-                # 处理多个描述的情况
-                if '<SEP>' in node_desc:
-                    node_desc = node_desc.split('<SEP>')[0]
-                
-                # 获取来源chunk ID
-                raw_chunk = data.get('source_id', '')
-                if raw_chunk.startswith('"') and raw_chunk.endswith('"'):
-                    source_chunk = raw_chunk[1:-1]  # 移除首尾的引号
-                else:
-                    source_chunk = raw_chunk
-                    
-                if '<SEP>' in source_chunk:
-                    source_chunk = source_chunk.split('<SEP>')[0]
-                
-                node_info = {
-                    '实体名称': node_name,
-                    '实体类型': node_type,
-                    '实体描述': node_desc,
-                    '来源': source_chunk
-                }
-                nodes_info.append(node_info)
-            
-            if not nodes_info:
-                st.warning("暂无节点信息")
-                return
-                
-            # 创建DataFrame并显示
-            import pandas as pd
-            df = pd.DataFrame(nodes_info)
-            
-            # 添加搜索和过滤功能
-            col1, col2 = st.columns([2, 2])
-            with col1:
-                search_term = st.text_input("🔍 搜索实体名称", "")
-            with col2:
-                selected_type = st.selectbox(
-                    "按实体类型筛选",
-                    ["全部"] + sorted(list(set(df['实体类型'].unique())))
-                )
-            
-            # 应用过滤
-            if search_term:
-                df = df[df['实体名称'].str.contains(search_term, case=False, na=False)]
-            if selected_type != "全部":
-                df = df[df['实体类型'] == selected_type]
-            
-            # 显示结果计数
-            st.markdown(f"##### 共找到 {len(df)} 个实体")
-            
-            # 使用st.dataframe显示，设置合适的列宽和高度
-            st.dataframe(
-                df,
-                use_container_width=True,
-                height=400,
-                column_config={
-                    "实体名称": st.column_config.TextColumn(width="medium"),
-                    "实体类型": st.column_config.TextColumn(width="small"),
-                    "实体描述": st.column_config.TextColumn(width="large"),
-                    "来源": st.column_config.TextColumn(width="small")
-                }
-            )
-                
-        except Exception as e:
-            logger.error(f"获取节点信息时出错: {str(e)}")
-            add_activity_log(f"[!] 获取节点信息失败: {str(e)}")
-            st.error(f"获取节点信息时出错: {str(e)}")
-    
-    with tab2:
-        try:
-            # 计算统计信息
-            total_nodes = graph.number_of_nodes()
-            total_edges = graph.number_of_edges()
-            avg_degree = round(sum(dict(graph.degree()).values()) / total_nodes, 2) if total_nodes > 0 else 0
-            
-            # 显示统计信息
-            col1, col2, col3 = st.columns(3)
-            with col1:
-                st.metric("总节点数", total_nodes)
-            with col2:
-                st.metric("总边数", total_edges)
-            with col3:
-                st.metric("平均度数", avg_degree)
-            
-            # 显示节点类型分布
-            node_types = {}
-            for _, data in graph.nodes(data=True):
-                raw_type = data.get('entity_type', '')
-                if raw_type.startswith('"') and raw_type.endswith('"'):
-                    node_type = raw_type[1:-1]  # 移除首尾的引号
-                else:
-                    node_type = raw_type
-                node_types[node_type] = node_types.get(node_type, 0) + 1
-            
-            st.markdown("#### 节点类型分布")
-            
-            # 创建类型分布的DataFrame
-            type_df = pd.DataFrame(
-                list(node_types.items()), 
-                columns=['类型', '数量']
-            ).sort_values('数量', ascending=False)
-            
-            # 显示表格和图表
-            col1, col2 = st.columns([1, 2])
-            with col1:
-                st.dataframe(type_df, use_container_width=True)
-            with col2:
-                st.bar_chart(type_df.set_index('类型'))
-            
-        except Exception as e:
-            logger.error(f"获取统计信息时出错: {str(e)}")
-            add_activity_log(f"[!] 获取统计信息失败: {str(e)}")
-            st.error(f"获取统计信息时出错: {str(e)}")
+        logger.error(f"Error reading graph file: {str(e)}")
+        return []
 
-# 在主界面添加查看文档按钮
-st.sidebar.button("📚 查看文档", on_click=show_documents_dialog)
+def handle_chat_download():
+    """Download chat history as markdown."""
+    if not st.session_state.messages:
+        st.error("No messages to download yet! Start a conversation first.", icon="ℹ️")
+        return
+        
+    from time import strftime
+    
+    # Create markdown content
+    md_lines = [
+        "# LightRAG Chat Session\n",
+        f"*Exported on {strftime('%Y-%m-%d %H:%M:%S')}*\n",
+        "\n## Settings\n",
+        f"- Search Mode: {st.session_state.settings['search_mode']}",
+        f"- LLM Model: {st.session_state.settings['llm_model']}",
+        f"- Embedding Model: {st.session_state.settings['embedding_model']}",
+        f"- Temperature: {st.session_state.settings['temperature']}",
+        f"- System Prompt: {st.session_state.settings['system_prompt']}\n",
+        "\n## Conversation\n"
+    ]
+    
+    # Add messages
+    for msg in st.session_state.messages:
+        role = "User" if msg["role"] == "user" else "Assistant"
+        md_lines.append(f"\n### {role} ({msg['metadata'].get('timestamp', 'N/A')})")
+        md_lines.append(f"\n{msg['content']}\n")
+        
+        if msg["role"] == "assistant" and "metadata" in msg:
+            metadata = msg["metadata"]
+            if "query_info" in metadata:
+                md_lines.append(f"\n`> [!query] {metadata['query_info']}`")
+            if "error" in metadata:
+                md_lines.append(f"\n> ⚠️ Error: {metadata['error']}")
+    
+    md_content = "\n".join(md_lines)
+    
+    st.download_button(
+        label="Download Chat",
+        data=md_content,
+        file_name=f"chat_session_{strftime('%Y%m%d_%H%M%S')}.md",
+        mime="text/markdown",
+        key="download_chat"
+    )
