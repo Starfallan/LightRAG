@@ -255,9 +255,6 @@ def init_rag():
     
     return True
 
-# Move title to sidebar and add activity log first
-st.sidebar.markdown("### [😎 LightRAG](https://github.com/HKUDS/LightRAG) [Kwaai](https://www.kwaai.ai/) Day [🔗](https://lightrag-gui.streamlit.app)\n#beta 2024-11-09")
-st.sidebar.markdown("[![QRC|64](https://api.qrserver.com/v1/create-qr-code/?size=80x80&data=https://cal.com/aiproductguy/lightrag-demo)](https://cal.com/aiproductguy/lightrag-demo)")
 
 # Add activity log container in sidebar
 st.sidebar.markdown("##### Activity Log")
@@ -960,7 +957,7 @@ def show_delete_dialog():
 # 在侧边栏添加删除按钮
 st.sidebar.button("🗑️ 删除记录", on_click=show_delete_dialog)
 
-@st.dialog("View Documents")
+@st.dialog("View Documents", width="large")
 def show_documents_dialog():
     """对话框用于显示已插入的文档信息."""
     st.markdown("### 已插入的文档信息")
@@ -992,15 +989,42 @@ def show_documents_dialog():
             # 提取所有节点信息
             nodes_info = []
             for node, data in graph.nodes(data=True):
-                # 移除引号
+                # 处理节点名称 - 移除外层引号
                 node_name = node.strip('"')
-                node_type = data.get('d0', 'unknown').strip('"')
-                node_desc = data.get('d1', '').strip('"')
+                
+                # 处理类型 - 获取引号内的完整内容
+                raw_type = data.get('entity_type', '')
+                if raw_type.startswith('"') and raw_type.endswith('"'):
+                    node_type = raw_type[1:-1]  # 移除首尾的引号
+                else:
+                    node_type = raw_type
+                
+                # 处理描述 - 获取引号内的完整内容
+                raw_desc = data.get('description', '')
+                if raw_desc.startswith('"') and raw_desc.endswith('"'):
+                    node_desc = raw_desc[1:-1]  # 移除首尾的引号
+                else:
+                    node_desc = raw_desc
+                    
+                # 处理多个描述的情况
+                if '<SEP>' in node_desc:
+                    node_desc = node_desc.split('<SEP>')[0]
+                
+                # 获取来源chunk ID
+                raw_chunk = data.get('source_id', '')
+                if raw_chunk.startswith('"') and raw_chunk.endswith('"'):
+                    source_chunk = raw_chunk[1:-1]  # 移除首尾的引号
+                else:
+                    source_chunk = raw_chunk
+                    
+                if '<SEP>' in source_chunk:
+                    source_chunk = source_chunk.split('<SEP>')[0]
                 
                 node_info = {
-                    '名称': node_name,
-                    '类型': node_type,
-                    '描述': node_desc[:100] + '...' if len(node_desc) > 100 else node_desc
+                    '实体名称': node_name,
+                    '实体类型': node_type,
+                    '实体描述': node_desc,
+                    '来源': source_chunk
                 }
                 nodes_info.append(node_info)
             
@@ -1011,7 +1035,38 @@ def show_documents_dialog():
             # 创建DataFrame并显示
             import pandas as pd
             df = pd.DataFrame(nodes_info)
-            st.dataframe(df, use_container_width=True)
+            
+            # 添加搜索和过滤功能
+            col1, col2 = st.columns([2, 2])
+            with col1:
+                search_term = st.text_input("🔍 搜索实体名称", "")
+            with col2:
+                selected_type = st.selectbox(
+                    "按实体类型筛选",
+                    ["全部"] + sorted(list(set(df['实体类型'].unique())))
+                )
+            
+            # 应用过滤
+            if search_term:
+                df = df[df['实体名称'].str.contains(search_term, case=False, na=False)]
+            if selected_type != "全部":
+                df = df[df['实体类型'] == selected_type]
+            
+            # 显示结果计数
+            st.markdown(f"##### 共找到 {len(df)} 个实体")
+            
+            # 使用st.dataframe显示，设置合适的列宽和高度
+            st.dataframe(
+                df,
+                use_container_width=True,
+                height=500,
+                column_config={
+                    "实体名称": st.column_config.TextColumn(width="medium"),
+                    "实体类型": st.column_config.TextColumn(width="small"),
+                    "实体描述": st.column_config.TextColumn(width="large"),
+                    "来源": st.column_config.TextColumn(width="small")
+                }
+            )
                 
         except Exception as e:
             logger.error(f"获取节点信息时出错: {str(e)}")
@@ -1037,7 +1092,11 @@ def show_documents_dialog():
             # 显示节点类型分布
             node_types = {}
             for _, data in graph.nodes(data=True):
-                node_type = data.get('d0', 'unknown').strip('"')
+                raw_type = data.get('entity_type', '')
+                if raw_type.startswith('"') and raw_type.endswith('"'):
+                    node_type = raw_type[1:-1]  # 移除首尾的引号
+                else:
+                    node_type = raw_type
                 node_types[node_type] = node_types.get(node_type, 0) + 1
             
             st.markdown("#### 节点类型分布")
@@ -1046,9 +1105,14 @@ def show_documents_dialog():
             type_df = pd.DataFrame(
                 list(node_types.items()), 
                 columns=['类型', '数量']
-            ).set_index('类型')
+            ).sort_values('数量', ascending=False)
             
-            st.bar_chart(type_df)
+            # 显示表格和图表
+            col1, col2 = st.columns([1, 2])
+            with col1:
+                st.dataframe(type_df, use_container_width=True)
+            with col2:
+                st.bar_chart(type_df.set_index('类型'))
             
         except Exception as e:
             logger.error(f"获取统计信息时出错: {str(e)}")
