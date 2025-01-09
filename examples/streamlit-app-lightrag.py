@@ -52,21 +52,13 @@ if "messages" not in st.session_state:
 
 # Set page config before any other Streamlit commands
 st.set_page_config(
-    page_title="LightRAG Demo on Streamlit",
-    page_icon="😎",
+    page_title="LightRAG GUI Demo ",
     layout="wide",
     initial_sidebar_state="collapsed",
     menu_items={
-        'Get help': "https://github.com/aiproductguy/LightRAG",
-        'Report a bug': "https://github.com/HKUDS/LightRAG/issues",
+        'Get help': "https://github.com/Starfallan/LightRAG",
         'About': """
         ##### LightRAG gui
-        MIT open-source licensed GUI for LightRAG, a lightweight framework for retrieval-augmented generation:
-        - [LightRAG Documentation](https://github.com/HKUDS/LightRAG)
-        - [GUI Source Code](https://github.com/aiproductguy/LightRAG/notebooks/)
-        - [Come to Demo Fridays at 12noon PT to say hi and give feedback!](https://cal.com/aiproductguy/lightrag-demo)
-        - ©️ 2024 Bry at el #BothParentsMatter
-        [![QRC|64](https://api.qrserver.com/v1/create-qr-code/?size=80x80&data=https://cal.com/aiproductguy/lightrag-demo)](https://cal.com/aiproductguy/lightrag-demo)
         """
     }
 )
@@ -130,6 +122,9 @@ def show_api_key_form(key_suffix=""):
         type="password",
         help="输入以'sk-'开头的OpenAI API密钥"
     )
+    
+    # 实现支持第三方API
+    #TODO 支持更多第三方API，比如Azure OpenAI
     
     new_base_url = st.text_input(
         "API Base URL:",
@@ -907,3 +902,158 @@ def handle_insert(content: str, tags: str = ""):
         logger.error(error_msg)
         add_activity_log(f"[!] Insert error: {str(e)}")
         st.error(error_msg)
+
+@st.dialog("Delete Records")
+def show_delete_dialog():
+    """对话框用于删除已插入的记录."""
+    st.markdown("### 删除记录")
+    
+    # 首先检查是否有有效的API key
+    api_key = get_api_key()
+    if not api_key:
+        st.error("请先在设置中提供OpenAI API密钥.")
+        return
+        
+    tab1, tab2 = st.tabs(["按实体名称删除", "按文档ID删除"])
+    
+    with tab1:
+        entity_name = st.text_input(
+            "实体名称:",
+            help="输入要删除的实体名称"
+        )
+        
+        if st.button("删除实体", key="delete_entity"):
+            if entity_name:
+                try:
+                    st.session_state.rag.delete_by_entity(entity_name)
+                    add_activity_log(f"[+] 已删除实体: {entity_name}")
+                    st.success(f"成功删除实体: {entity_name}")
+                except Exception as e:
+                    logger.error(f"删除实体时出错: {str(e)}")
+                    add_activity_log(f"[!] 删除实体失败: {str(e)}")
+                    st.error(f"删除实体时出错: {str(e)}")
+            else:
+                st.warning("请输入要删除的实体名称")
+    
+    with tab2:
+        doc_id = st.text_input(
+            "文档ID:",
+            help="输入要删除的文档ID"
+        )
+        
+        if st.button("删除文档", key="delete_doc"):
+            if doc_id:
+                try:
+                    st.session_state.rag.delete_by_doc_id(doc_id)
+                    add_activity_log(f"[+] 已删除文档: {doc_id}")
+                    st.success(f"成功删除文档: {doc_id}")
+                except Exception as e:
+                    logger.error(f"删除文档时出错: {str(e)}")
+                    add_activity_log(f"[!] 删除文档失败: {str(e)}")
+                    st.error(f"删除文档时出错: {str(e)}")
+            else:
+                st.warning("请输入要删除的文档ID")
+
+# 在主界面添加删除按钮
+# ... existing code ...
+
+# 在侧边栏添加删除按钮
+st.sidebar.button("🗑️ 删除记录", on_click=show_delete_dialog)
+
+@st.dialog("View Documents")
+def show_documents_dialog():
+    """对话框用于显示已插入的文档信息."""
+    st.markdown("### 已插入的文档信息")
+    
+    # 首先检查是否有有效的API key
+    api_key = get_api_key()
+    if not api_key:
+        st.error("请先在设置中提供OpenAI API密钥.")
+        return
+        
+    tab1, tab2 = st.tabs(["实体信息", "文档统计"])
+    
+    # 读取图文件
+    graph_path = "./dickens/graph_chunk_entity_relation.graphml"
+    if not os.path.exists(graph_path):
+        st.markdown("> [!graph] ⚠ **暂无知识图谱数据.** 请先插入一些文档.")
+        return
+        
+    try:
+        graph = nx.read_graphml(graph_path)
+    except Exception as e:
+        logger.error(f"读取图文件时出错: {str(e)}")
+        add_activity_log(f"[!] 读取图文件失败: {str(e)}")
+        st.error(f"读取图文件时出错: {str(e)}")
+        return
+    
+    with tab1:
+        try:
+            # 提取所有节点信息
+            nodes_info = []
+            for node, data in graph.nodes(data=True):
+                # 移除引号
+                node_name = node.strip('"')
+                node_type = data.get('d0', 'unknown').strip('"')
+                node_desc = data.get('d1', '').strip('"')
+                
+                node_info = {
+                    '名称': node_name,
+                    '类型': node_type,
+                    '描述': node_desc[:100] + '...' if len(node_desc) > 100 else node_desc
+                }
+                nodes_info.append(node_info)
+            
+            if not nodes_info:
+                st.warning("暂无节点信息")
+                return
+                
+            # 创建DataFrame并显示
+            import pandas as pd
+            df = pd.DataFrame(nodes_info)
+            st.dataframe(df, use_container_width=True)
+                
+        except Exception as e:
+            logger.error(f"获取节点信息时出错: {str(e)}")
+            add_activity_log(f"[!] 获取节点信息失败: {str(e)}")
+            st.error(f"获取节点信息时出错: {str(e)}")
+    
+    with tab2:
+        try:
+            # 计算统计信息
+            total_nodes = graph.number_of_nodes()
+            total_edges = graph.number_of_edges()
+            avg_degree = round(sum(dict(graph.degree()).values()) / total_nodes, 2) if total_nodes > 0 else 0
+            
+            # 显示统计信息
+            col1, col2, col3 = st.columns(3)
+            with col1:
+                st.metric("总节点数", total_nodes)
+            with col2:
+                st.metric("总边数", total_edges)
+            with col3:
+                st.metric("平均度数", avg_degree)
+            
+            # 显示节点类型分布
+            node_types = {}
+            for _, data in graph.nodes(data=True):
+                node_type = data.get('d0', 'unknown').strip('"')
+                node_types[node_type] = node_types.get(node_type, 0) + 1
+            
+            st.markdown("#### 节点类型分布")
+            
+            # 创建类型分布的DataFrame
+            type_df = pd.DataFrame(
+                list(node_types.items()), 
+                columns=['类型', '数量']
+            ).set_index('类型')
+            
+            st.bar_chart(type_df)
+            
+        except Exception as e:
+            logger.error(f"获取统计信息时出错: {str(e)}")
+            add_activity_log(f"[!] 获取统计信息失败: {str(e)}")
+            st.error(f"获取统计信息时出错: {str(e)}")
+
+# 在主界面添加查看文档按钮
+st.sidebar.button("📚 查看文档", on_click=show_documents_dialog)
