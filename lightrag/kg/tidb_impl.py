@@ -1,17 +1,29 @@
 import asyncio
 import os
-from dataclasses import dataclass
-from typing import Union
+from dataclasses import dataclass, field
+from typing import Any, Union, final
 
 import numpy as np
+
+from lightrag.types import KnowledgeGraph, KnowledgeGraphNode, KnowledgeGraphEdge
+
+
+from ..base import BaseGraphStorage, BaseKVStorage, BaseVectorStorage
+from ..namespace import NameSpace, is_namespace
+from ..utils import logger
+
+import pipmaster as pm
+import configparser
+
+if not pm.is_installed("pymysql"):
+    pm.install("pymysql")
+if not pm.is_installed("sqlalchemy"):
+    pm.install("sqlalchemy")
+
 from sqlalchemy import create_engine, text
-from tqdm import tqdm
-
-from lightrag.base import BaseVectorStorage, BaseKVStorage, BaseGraphStorage
-from lightrag.utils import logger
 
 
-class TiDB(object):
+class TiDB:
     def __init__(self, config, **kwargs):
         self.host = config.get("host", None)
         self.port = config.get("port", None)
@@ -40,7 +52,6 @@ class TiDB(object):
                 logger.error(f"Failed to check table {k} in TiDB database")
                 logger.error(f"TiDB database error: {e}")
                 try:
-                    # print(v["ddl"])
                     await self.execute(v["ddl"])
                     logger.info(f"Created table {k} in TiDB database")
                 except Exception as e:
@@ -58,9 +69,7 @@ class TiDB(object):
             try:
                 result = conn.execute(text(sql), params)
             except Exception as e:
-                logger.error(f"Tidb database error: {e}")
-                print(sql)
-                print(params)
+                logger.error(f"Tidb database,\nsql:{sql},\nparams:{params},\nerror:{e}")
                 raise
             if multirows:
                 rows = result.all()
@@ -85,61 +94,120 @@ class TiDB(object):
                 else:
                     conn.execute(text(sql), parameters=data)
         except Exception as e:
-            logger.error(f"TiDB database error: {e}")
-            print(sql)
-            print(data)
+            logger.error(f"Tidb database,\nsql:{sql},\ndata:{data},\nerror:{e}")
             raise
 
 
+class ClientManager:
+    _instances: dict[str, Any] = {"db": None, "ref_count": 0}
+    _lock = asyncio.Lock()
+
+    @staticmethod
+    def get_config() -> dict[str, Any]:
+        config = configparser.ConfigParser()
+        config.read("config.ini", "utf-8")
+
+        return {
+            "host": os.environ.get(
+                "TIDB_HOST",
+                config.get("tidb", "host", fallback="localhost"),
+            ),
+            "port": os.environ.get(
+                "TIDB_PORT", config.get("tidb", "port", fallback=4000)
+            ),
+            "user": os.environ.get(
+                "TIDB_USER",
+                config.get("tidb", "user", fallback=None),
+            ),
+            "password": os.environ.get(
+                "TIDB_PASSWORD",
+                config.get("tidb", "password", fallback=None),
+            ),
+            "database": os.environ.get(
+                "TIDB_DATABASE",
+                config.get("tidb", "database", fallback=None),
+            ),
+            "workspace": os.environ.get(
+                "TIDB_WORKSPACE",
+                config.get("tidb", "workspace", fallback="default"),
+            ),
+        }
+
+    @classmethod
+    async def get_client(cls) -> TiDB:
+        async with cls._lock:
+            if cls._instances["db"] is None:
+                config = ClientManager.get_config()
+                db = TiDB(config)
+                await db.check_tables()
+                cls._instances["db"] = db
+                cls._instances["ref_count"] = 0
+            cls._instances["ref_count"] += 1
+            return cls._instances["db"]
+
+    @classmethod
+    async def release_client(cls, db: TiDB):
+        async with cls._lock:
+            if db is not None:
+                if db is cls._instances["db"]:
+                    cls._instances["ref_count"] -= 1
+                    if cls._instances["ref_count"] == 0:
+                        cls._instances["db"] = None
+
+
+@final
 @dataclass
 class TiDBKVStorage(BaseKVStorage):
-    # should pass db object to self.db
+    db: TiDB = field(default=None)
+
     def __post_init__(self):
         self._data = {}
         self._max_batch_size = self.global_config["embedding_batch_num"]
 
-    ################ QUERY METHODS ################
+    async def initialize(self):
+        if self.db is None:
+            self.db = await ClientManager.get_client()
 
-    async def get_by_id(self, id: str) -> Union[dict, None]:
-        """根据 id 获取 doc_full 数据."""
+    async def finalize(self):
+        if self.db is not None:
+            await ClientManager.release_client(self.db)
+            self.db = None
+
+    ################ QUERY METHODS ################
+    async def get_all(self) -> dict[str, Any]:
+        """Get all data from storage
+
+        Returns:
+            Dictionary containing all stored data
+        """
+        async with self._storage_lock:
+            return dict(self._data)
+
+    async def get_by_id(self, id: str) -> dict[str, Any] | None:
+        """Fetch doc_full data by id."""
         SQL = SQL_TEMPLATES["get_by_id_" + self.namespace]
         params = {"id": id}
-        # print("get_by_id:"+SQL)
-        res = await self.db.query(SQL, params)
-        if res:
-            data = res  # {"data":res}
-            # print (data)
-            return data
-        else:
-            return None
+        response = await self.db.query(SQL, params)
+        return response if response else None
 
     # Query by id
-    async def get_by_ids(self, ids: list[str], fields=None) -> Union[list[dict], None]:
-        """根据 id 获取 doc_chunks 数据"""
+    async def get_by_ids(self, ids: list[str]) -> list[dict[str, Any]]:
+        """Fetch doc_chunks data by id"""
         SQL = SQL_TEMPLATES["get_by_ids_" + self.namespace].format(
             ids=",".join([f"'{id}'" for id in ids])
         )
-        # print("get_by_ids:"+SQL)
-        res = await self.db.query(SQL, multirows=True)
-        if res:
-            data = res  # [{"data":i} for i in res]
-            # print(data)
-            return data
-        else:
-            return None
+        return await self.db.query(SQL, multirows=True)
 
-    async def filter_keys(self, keys: list[str]) -> set[str]:
-        """过滤掉重复内容"""
+    async def filter_keys(self, keys: set[str]) -> set[str]:
         SQL = SQL_TEMPLATES["filter_keys"].format(
-            table_name=N_T[self.namespace],
-            id_field=N_ID[self.namespace],
+            table_name=namespace_to_table_name(self.namespace),
+            id_field=namespace_to_id(self.namespace),
             ids=",".join([f"'{id}'" for id in keys]),
         )
         try:
             await self.db.query(SQL)
         except Exception as e:
-            logger.error(f"Tidb database error: {e}")
-            print(SQL)
+            logger.error(f"Tidb database,\nsql:{SQL},\nkeys:{keys},\nerror:{e}")
         res = await self.db.query(SQL, multirows=True)
         if res:
             exist_keys = [key["id"] for key in res]
@@ -150,10 +218,13 @@ class TiDBKVStorage(BaseKVStorage):
         return data
 
     ################ INSERT full_doc AND chunks ################
-    async def upsert(self, data: dict[str, dict]):
+    async def upsert(self, data: dict[str, dict[str, Any]]) -> None:
+        logger.info(f"Inserting {len(data)} to {self.namespace}")
+        if not data:
+            return
         left_data = {k: v for k, v in data.items() if k not in self._data}
         self._data.update(left_data)
-        if self.namespace == "text_chunks":
+        if is_namespace(self.namespace, NameSpace.KV_STORE_TEXT_CHUNKS):
             list_data = [
                 {
                     "__id__": k,
@@ -183,13 +254,13 @@ class TiDBKVStorage(BaseKVStorage):
                         "tokens": item["tokens"],
                         "chunk_order_index": item["chunk_order_index"],
                         "full_doc_id": item["full_doc_id"],
-                        "content_vector": f"{item["__vector__"].tolist()}",
+                        "content_vector": f"{item['__vector__'].tolist()}",
                         "workspace": self.db.workspace,
                     }
                 )
             await self.db.execute(merge_sql, data)
 
-        if self.namespace == "full_docs":
+        if is_namespace(self.namespace, NameSpace.KV_STORE_FULL_DOCS):
             merge_sql = SQL_TEMPLATES["upsert_doc_full"]
             data = []
             for k, v in self._data.items():
@@ -203,27 +274,42 @@ class TiDBKVStorage(BaseKVStorage):
             await self.db.execute(merge_sql, data)
         return left_data
 
-    async def index_done_callback(self):
-        if self.namespace in ["full_docs", "text_chunks"]:
-            logger.info("full doc and chunk data had been saved into TiDB db!")
+    async def index_done_callback(self) -> None:
+        # Ti handles persistence automatically
+        pass
 
 
+@final
 @dataclass
 class TiDBVectorDBStorage(BaseVectorStorage):
-    cosine_better_than_threshold: float = 0.2
+    db: TiDB | None = field(default=None)
 
     def __post_init__(self):
         self._client_file_name = os.path.join(
             self.global_config["working_dir"], f"vdb_{self.namespace}.json"
         )
         self._max_batch_size = self.global_config["embedding_batch_num"]
-        self.cosine_better_than_threshold = self.global_config.get(
-            "cosine_better_than_threshold", self.cosine_better_than_threshold
-        )
+        config = self.global_config.get("vector_db_storage_cls_kwargs", {})
+        cosine_threshold = config.get("cosine_better_than_threshold")
+        if cosine_threshold is None:
+            raise ValueError(
+                "cosine_better_than_threshold must be specified in vector_db_storage_cls_kwargs"
+            )
+        self.cosine_better_than_threshold = cosine_threshold
 
-    async def query(self, query: str, top_k: int) -> list[dict]:
-        """search from tidb vector"""
+    async def initialize(self):
+        if self.db is None:
+            self.db = await ClientManager.get_client()
 
+    async def finalize(self):
+        if self.db is not None:
+            await ClientManager.release_client(self.db)
+            self.db = None
+
+    async def query(
+        self, query: str, top_k: int, ids: list[str] | None = None
+    ) -> list[dict[str, Any]]:
+        """Search from tidb vector"""
         embeddings = await self.embedding_func([query])
         embedding = embeddings[0]
 
@@ -244,13 +330,13 @@ class TiDBVectorDBStorage(BaseVectorStorage):
         return results
 
     ###### INSERT entities And relationships ######
-    async def upsert(self, data: dict[str, dict]):
-        # ignore, upsert in TiDBKVStorage already
-        if not len(data):
-            logger.warning("You insert an empty data to vector DB")
-            return []
-        if self.namespace == "chunks":
-            return []
+    async def upsert(self, data: dict[str, dict[str, Any]]) -> None:
+        logger.info(f"Inserting {len(data)} to {self.namespace}")
+        if not data:
+            return
+        if is_namespace(self.namespace, NameSpace.VECTOR_STORE_CHUNKS):
+            return
+
         logger.info(f"Inserting {len(data)} vectors to {self.namespace}")
 
         list_data = [
@@ -266,27 +352,20 @@ class TiDBVectorDBStorage(BaseVectorStorage):
             for i in range(0, len(contents), self._max_batch_size)
         ]
         embedding_tasks = [self.embedding_func(batch) for batch in batches]
-        embeddings_list = []
-        for f in tqdm(
-            asyncio.as_completed(embedding_tasks),
-            total=len(embedding_tasks),
-            desc="Generating embeddings",
-            unit="batch",
-        ):
-            embeddings = await f
-            embeddings_list.append(embeddings)
+        embeddings_list = await asyncio.gather(*embedding_tasks)
+
         embeddings = np.concatenate(embeddings_list)
         for i, d in enumerate(list_data):
             d["content_vector"] = embeddings[i]
 
-        if self.namespace == "entities":
+        if is_namespace(self.namespace, NameSpace.VECTOR_STORE_ENTITIES):
             data = []
             for item in list_data:
                 param = {
                     "id": item["id"],
                     "name": item["entity_name"],
                     "content": item["content"],
-                    "content_vector": f"{item["content_vector"].tolist()}",
+                    "content_vector": f"{item['content_vector'].tolist()}",
                     "workspace": self.db.workspace,
                 }
                 # update entity_id if node inserted by graph_storage_instance before
@@ -300,7 +379,7 @@ class TiDBVectorDBStorage(BaseVectorStorage):
                 merge_sql = SQL_TEMPLATES["insert_entity"]
                 await self.db.execute(merge_sql, data)
 
-        elif self.namespace == "relationships":
+        elif is_namespace(self.namespace, NameSpace.VECTOR_STORE_RELATIONSHIPS):
             data = []
             for item in list_data:
                 param = {
@@ -308,7 +387,7 @@ class TiDBVectorDBStorage(BaseVectorStorage):
                     "source_name": item["src_id"],
                     "target_name": item["tgt_id"],
                     "content": item["content"],
-                    "content_vector": f"{item["content_vector"].tolist()}",
+                    "content_vector": f"{item['content_vector'].tolist()}",
                     "workspace": self.db.workspace,
                 }
                 # update relation_id if node inserted by graph_storage_instance before
@@ -322,14 +401,184 @@ class TiDBVectorDBStorage(BaseVectorStorage):
                 merge_sql = SQL_TEMPLATES["insert_relationship"]
                 await self.db.execute(merge_sql, data)
 
+    async def get_by_status(self, status: str) -> Union[list[dict[str, Any]], None]:
+        SQL = SQL_TEMPLATES["get_by_status_" + self.namespace]
+        params = {"workspace": self.db.workspace, "status": status}
+        return await self.db.query(SQL, params, multirows=True)
 
+    async def delete_entity(self, entity_name: str) -> None:
+        raise NotImplementedError
+
+    async def delete_entity_relation(self, entity_name: str) -> None:
+        raise NotImplementedError
+
+    async def index_done_callback(self) -> None:
+        # Ti handles persistence automatically
+        pass
+
+    async def search_by_prefix(self, prefix: str) -> list[dict[str, Any]]:
+        """Search for records with IDs starting with a specific prefix.
+
+        Args:
+            prefix: The prefix to search for in record IDs
+
+        Returns:
+            List of records with matching ID prefixes
+        """
+        # Determine which table to query based on namespace
+        if self.namespace == NameSpace.VECTOR_STORE_ENTITIES:
+            sql_template = """
+                SELECT entity_id as id, name as entity_name, entity_type, description, content
+                FROM LIGHTRAG_GRAPH_NODES
+                WHERE entity_id LIKE :prefix_pattern AND workspace = :workspace
+            """
+        elif self.namespace == NameSpace.VECTOR_STORE_RELATIONSHIPS:
+            sql_template = """
+                SELECT relation_id as id, source_name as src_id, target_name as tgt_id,
+                       keywords, description, content
+                FROM LIGHTRAG_GRAPH_EDGES
+                WHERE relation_id LIKE :prefix_pattern AND workspace = :workspace
+            """
+        elif self.namespace == NameSpace.VECTOR_STORE_CHUNKS:
+            sql_template = """
+                SELECT chunk_id as id, content, tokens, chunk_order_index, full_doc_id
+                FROM LIGHTRAG_DOC_CHUNKS
+                WHERE chunk_id LIKE :prefix_pattern AND workspace = :workspace
+            """
+        else:
+            logger.warning(
+                f"Namespace {self.namespace} not supported for prefix search"
+            )
+            return []
+
+        # Add prefix pattern parameter with % for SQL LIKE
+        prefix_pattern = f"{prefix}%"
+        params = {"prefix_pattern": prefix_pattern, "workspace": self.db.workspace}
+
+        try:
+            results = await self.db.query(sql_template, params=params, multirows=True)
+            logger.debug(
+                f"Found {len(results) if results else 0} records with prefix '{prefix}'"
+            )
+            return results if results else []
+        except Exception as e:
+            logger.error(f"Error searching records with prefix '{prefix}': {e}")
+            return []
+
+    async def get_by_id(self, id: str) -> dict[str, Any] | None:
+        """Get vector data by its ID
+
+        Args:
+            id: The unique identifier of the vector
+
+        Returns:
+            The vector data if found, or None if not found
+        """
+        try:
+            # Determine which table to query based on namespace
+            if self.namespace == NameSpace.VECTOR_STORE_ENTITIES:
+                sql_template = """
+                    SELECT entity_id as id, name as entity_name, entity_type, description, content
+                    FROM LIGHTRAG_GRAPH_NODES
+                    WHERE entity_id = :entity_id AND workspace = :workspace
+                """
+                params = {"entity_id": id, "workspace": self.db.workspace}
+            elif self.namespace == NameSpace.VECTOR_STORE_RELATIONSHIPS:
+                sql_template = """
+                    SELECT relation_id as id, source_name as src_id, target_name as tgt_id,
+                           keywords, description, content
+                    FROM LIGHTRAG_GRAPH_EDGES
+                    WHERE relation_id = :relation_id AND workspace = :workspace
+                """
+                params = {"relation_id": id, "workspace": self.db.workspace}
+            elif self.namespace == NameSpace.VECTOR_STORE_CHUNKS:
+                sql_template = """
+                    SELECT chunk_id as id, content, tokens, chunk_order_index, full_doc_id
+                    FROM LIGHTRAG_DOC_CHUNKS
+                    WHERE chunk_id = :chunk_id AND workspace = :workspace
+                """
+                params = {"chunk_id": id, "workspace": self.db.workspace}
+            else:
+                logger.warning(
+                    f"Namespace {self.namespace} not supported for get_by_id"
+                )
+                return None
+
+            result = await self.db.query(sql_template, params=params)
+            return result
+        except Exception as e:
+            logger.error(f"Error retrieving vector data for ID {id}: {e}")
+            return None
+
+    async def get_by_ids(self, ids: list[str]) -> list[dict[str, Any]]:
+        """Get multiple vector data by their IDs
+
+        Args:
+            ids: List of unique identifiers
+
+        Returns:
+            List of vector data objects that were found
+        """
+        if not ids:
+            return []
+
+        try:
+            # Format IDs for SQL IN clause
+            ids_str = ", ".join([f"'{id}'" for id in ids])
+
+            # Determine which table to query based on namespace
+            if self.namespace == NameSpace.VECTOR_STORE_ENTITIES:
+                sql_template = f"""
+                    SELECT entity_id as id, name as entity_name, entity_type, description, content
+                    FROM LIGHTRAG_GRAPH_NODES
+                    WHERE entity_id IN ({ids_str}) AND workspace = :workspace
+                """
+            elif self.namespace == NameSpace.VECTOR_STORE_RELATIONSHIPS:
+                sql_template = f"""
+                    SELECT relation_id as id, source_name as src_id, target_name as tgt_id,
+                           keywords, description, content
+                    FROM LIGHTRAG_GRAPH_EDGES
+                    WHERE relation_id IN ({ids_str}) AND workspace = :workspace
+                """
+            elif self.namespace == NameSpace.VECTOR_STORE_CHUNKS:
+                sql_template = f"""
+                    SELECT chunk_id as id, content, tokens, chunk_order_index, full_doc_id
+                    FROM LIGHTRAG_DOC_CHUNKS
+                    WHERE chunk_id IN ({ids_str}) AND workspace = :workspace
+                """
+            else:
+                logger.warning(
+                    f"Namespace {self.namespace} not supported for get_by_ids"
+                )
+                return []
+
+            params = {"workspace": self.db.workspace}
+            results = await self.db.query(sql_template, params=params, multirows=True)
+            return results if results else []
+        except Exception as e:
+            logger.error(f"Error retrieving vector data for IDs {ids}: {e}")
+            return []
+
+
+@final
 @dataclass
 class TiDBGraphStorage(BaseGraphStorage):
+    db: TiDB = field(default=None)
+
     def __post_init__(self):
         self._max_batch_size = self.global_config["embedding_batch_num"]
 
+    async def initialize(self):
+        if self.db is None:
+            self.db = await ClientManager.get_client()
+
+    async def finalize(self):
+        if self.db is not None:
+            await ClientManager.release_client(self.db)
+            self.db = None
+
     #################### upsert method ################
-    async def upsert_node(self, node_id: str, node_data: dict[str, str]):
+    async def upsert_node(self, node_id: str, node_data: dict[str, str]) -> None:
         entity_name = node_id
         entity_type = node_data["entity_type"]
         description = node_data["description"]
@@ -360,7 +609,7 @@ class TiDBGraphStorage(BaseGraphStorage):
 
     async def upsert_edge(
         self, source_node_id: str, target_node_id: str, edge_data: dict[str, str]
-    ):
+    ) -> None:
         source_name = source_node_id
         target_name = target_node_id
         weight = edge_data["weight"]
@@ -396,7 +645,9 @@ class TiDBGraphStorage(BaseGraphStorage):
         }
         await self.db.execute(merge_sql, data)
 
-    async def embed_nodes(self, algorithm: str) -> tuple[np.ndarray, list[str]]:
+    async def embed_nodes(
+        self, algorithm: str
+    ) -> tuple[np.ndarray[Any, Any], list[str]]:
         if algorithm not in self._node_embed_algorithms:
             raise ValueError(f"Node embedding algorithm {algorithm} not supported")
         return await self._node_embed_algorithms[algorithm]()
@@ -429,14 +680,14 @@ class TiDBGraphStorage(BaseGraphStorage):
         degree = await self.node_degree(src_id) + await self.node_degree(tgt_id)
         return degree
 
-    async def get_node(self, node_id: str) -> Union[dict, None]:
+    async def get_node(self, node_id: str) -> dict[str, str] | None:
         sql = SQL_TEMPLATES["get_node"]
         param = {"name": node_id, "workspace": self.db.workspace}
         return await self.db.query(sql, param)
 
     async def get_edge(
         self, source_node_id: str, target_node_id: str
-    ) -> Union[dict, None]:
+    ) -> dict[str, str] | None:
         sql = SQL_TEMPLATES["get_edge"]
         param = {
             "source_name": source_node_id,
@@ -445,9 +696,7 @@ class TiDBGraphStorage(BaseGraphStorage):
         }
         return await self.db.query(sql, param)
 
-    async def get_node_edges(
-        self, source_node_id: str
-    ) -> Union[list[tuple[str, str]], None]:
+    async def get_node_edges(self, source_node_id: str) -> list[tuple[str, str]] | None:
         sql = SQL_TEMPLATES["get_node_edges"]
         param = {"source_name": source_node_id, "workspace": self.db.workspace}
         res = await self.db.query(sql, param, multirows=True)
@@ -457,21 +706,197 @@ class TiDBGraphStorage(BaseGraphStorage):
         else:
             return []
 
+    async def index_done_callback(self) -> None:
+        # Ti handles persistence automatically
+        pass
+
+    async def delete_node(self, node_id: str) -> None:
+        """Delete a node and all its related edges
+
+        Args:
+            node_id: The ID of the node to delete
+        """
+        # First delete all edges related to this node
+        await self.db.execute(
+            SQL_TEMPLATES["delete_node_edges"],
+            {"name": node_id, "workspace": self.db.workspace},
+        )
+
+        # Then delete the node itself
+        await self.db.execute(
+            SQL_TEMPLATES["delete_node"],
+            {"name": node_id, "workspace": self.db.workspace},
+        )
+
+        logger.debug(
+            f"Node {node_id} and its related edges have been deleted from the graph"
+        )
+
+    async def get_all_labels(self) -> list[str]:
+        """Get all entity types (labels) in the database
+
+        Returns:
+            List of labels sorted alphabetically
+        """
+        result = await self.db.query(
+            SQL_TEMPLATES["get_all_labels"],
+            {"workspace": self.db.workspace},
+            multirows=True,
+        )
+
+        if not result:
+            return []
+
+        # Extract all labels
+        return [item["label"] for item in result]
+
+    async def get_knowledge_graph(
+        self, node_label: str, max_depth: int = 5
+    ) -> KnowledgeGraph:
+        """
+        Get a connected subgraph of nodes matching the specified label
+        Maximum number of nodes is limited by MAX_GRAPH_NODES environment variable (default: 1000)
+
+        Args:
+            node_label: The node label to match
+            max_depth: Maximum depth of the subgraph
+
+        Returns:
+            KnowledgeGraph object containing nodes and edges
+        """
+        result = KnowledgeGraph()
+        MAX_GRAPH_NODES = int(os.getenv("MAX_GRAPH_NODES", 1000))
+
+        # Get matching nodes
+        if node_label == "*":
+            # Handle special case, get all nodes
+            node_results = await self.db.query(
+                SQL_TEMPLATES["get_all_nodes"],
+                {"workspace": self.db.workspace, "max_nodes": MAX_GRAPH_NODES},
+                multirows=True,
+            )
+        else:
+            # Get nodes matching the label
+            label_pattern = f"%{node_label}%"
+            node_results = await self.db.query(
+                SQL_TEMPLATES["get_matching_nodes"],
+                {"workspace": self.db.workspace, "label_pattern": label_pattern},
+                multirows=True,
+            )
+
+        if not node_results:
+            logger.warning(f"No nodes found matching label {node_label}")
+            return result
+
+        # Limit the number of returned nodes
+        if len(node_results) > MAX_GRAPH_NODES:
+            node_results = node_results[:MAX_GRAPH_NODES]
+
+        # Extract node names for edge query
+        node_names = [node["name"] for node in node_results]
+        node_names_str = ",".join([f"'{name}'" for name in node_names])
+
+        # Add nodes to result
+        for node in node_results:
+            node_properties = {
+                k: v for k, v in node.items() if k not in ["id", "name", "entity_type"]
+            }
+            result.nodes.append(
+                KnowledgeGraphNode(
+                    id=node["name"],
+                    labels=[node["entity_type"]]
+                    if node.get("entity_type")
+                    else [node["name"]],
+                    properties=node_properties,
+                )
+            )
+
+        # Get related edges
+        edge_results = await self.db.query(
+            SQL_TEMPLATES["get_related_edges"].format(node_names=node_names_str),
+            {"workspace": self.db.workspace},
+            multirows=True,
+        )
+
+        if edge_results:
+            # Add edges to result
+            for edge in edge_results:
+                # Only include edges related to selected nodes
+                if (
+                    edge["source_name"] in node_names
+                    and edge["target_name"] in node_names
+                ):
+                    edge_id = f"{edge['source_name']}-{edge['target_name']}"
+                    edge_properties = {
+                        k: v
+                        for k, v in edge.items()
+                        if k not in ["id", "source_name", "target_name"]
+                    }
+
+                    result.edges.append(
+                        KnowledgeGraphEdge(
+                            id=edge_id,
+                            type="RELATED",
+                            source=edge["source_name"],
+                            target=edge["target_name"],
+                            properties=edge_properties,
+                        )
+                    )
+
+        logger.info(
+            f"Subgraph query successful | Node count: {len(result.nodes)} | Edge count: {len(result.edges)}"
+        )
+        return result
+
+    async def remove_nodes(self, nodes: list[str]):
+        """Delete multiple nodes
+
+        Args:
+            nodes: List of node IDs to delete
+        """
+        for node_id in nodes:
+            await self.delete_node(node_id)
+
+    async def remove_edges(self, edges: list[tuple[str, str]]):
+        """Delete multiple edges
+
+        Args:
+            edges: List of edges to delete, each edge is a (source, target) tuple
+        """
+        for source, target in edges:
+            await self.db.execute(
+                SQL_TEMPLATES["remove_multiple_edges"],
+                {"source": source, "target": target, "workspace": self.db.workspace},
+            )
+
 
 N_T = {
-    "full_docs": "LIGHTRAG_DOC_FULL",
-    "text_chunks": "LIGHTRAG_DOC_CHUNKS",
-    "chunks": "LIGHTRAG_DOC_CHUNKS",
-    "entities": "LIGHTRAG_GRAPH_NODES",
-    "relationships": "LIGHTRAG_GRAPH_EDGES",
+    NameSpace.KV_STORE_FULL_DOCS: "LIGHTRAG_DOC_FULL",
+    NameSpace.KV_STORE_TEXT_CHUNKS: "LIGHTRAG_DOC_CHUNKS",
+    NameSpace.VECTOR_STORE_CHUNKS: "LIGHTRAG_DOC_CHUNKS",
+    NameSpace.VECTOR_STORE_ENTITIES: "LIGHTRAG_GRAPH_NODES",
+    NameSpace.VECTOR_STORE_RELATIONSHIPS: "LIGHTRAG_GRAPH_EDGES",
 }
 N_ID = {
-    "full_docs": "doc_id",
-    "text_chunks": "chunk_id",
-    "chunks": "chunk_id",
-    "entities": "entity_id",
-    "relationships": "relation_id",
+    NameSpace.KV_STORE_FULL_DOCS: "doc_id",
+    NameSpace.KV_STORE_TEXT_CHUNKS: "chunk_id",
+    NameSpace.VECTOR_STORE_CHUNKS: "chunk_id",
+    NameSpace.VECTOR_STORE_ENTITIES: "entity_id",
+    NameSpace.VECTOR_STORE_RELATIONSHIPS: "relation_id",
 }
+
+
+def namespace_to_table_name(namespace: str) -> str:
+    for k, v in N_T.items():
+        if is_namespace(namespace, k):
+            return v
+
+
+def namespace_to_id(namespace: str) -> str:
+    for k, v in N_ID.items():
+        if is_namespace(namespace, k):
+            return v
+
 
 TABLES = {
     "LIGHTRAG_DOC_FULL": {
@@ -652,5 +1077,56 @@ SQL_TEMPLATES = {
         content_vector = VALUES(content_vector), workspace = VALUES(workspace), updatetime = CURRENT_TIMESTAMP,
         weight = VALUES(weight), keywords = VALUES(keywords), description = VALUES(description),
         source_chunk_id = VALUES(source_chunk_id)
+    """,
+    "delete_node": """
+        DELETE FROM LIGHTRAG_GRAPH_NODES
+        WHERE name = :name AND workspace = :workspace
+    """,
+    "delete_node_edges": """
+        DELETE FROM LIGHTRAG_GRAPH_EDGES
+        WHERE (source_name = :name OR target_name = :name) AND workspace = :workspace
+    """,
+    "get_all_labels": """
+        SELECT DISTINCT entity_type as label
+        FROM LIGHTRAG_GRAPH_NODES
+        WHERE workspace = :workspace
+        ORDER BY entity_type
+    """,
+    "get_matching_nodes": """
+        SELECT * FROM LIGHTRAG_GRAPH_NODES
+        WHERE name LIKE :label_pattern AND workspace = :workspace
+        ORDER BY name
+    """,
+    "get_all_nodes": """
+        SELECT * FROM LIGHTRAG_GRAPH_NODES
+        WHERE workspace = :workspace
+        ORDER BY name
+        LIMIT :max_nodes
+    """,
+    "get_related_edges": """
+        SELECT * FROM LIGHTRAG_GRAPH_EDGES
+        WHERE (source_name IN (:node_names) OR target_name IN (:node_names))
+        AND workspace = :workspace
+    """,
+    "remove_multiple_edges": """
+        DELETE FROM LIGHTRAG_GRAPH_EDGES
+        WHERE (source_name = :source AND target_name = :target)
+        AND workspace = :workspace
+    """,
+    # Search by prefix SQL templates
+    "search_entity_by_prefix": """
+        SELECT entity_id as id, name as entity_name, entity_type, description, content
+        FROM LIGHTRAG_GRAPH_NODES
+        WHERE entity_id LIKE :prefix_pattern AND workspace = :workspace
+    """,
+    "search_relationship_by_prefix": """
+        SELECT relation_id as id, source_name as src_id, target_name as tgt_id, keywords, description, content
+        FROM LIGHTRAG_GRAPH_EDGES
+        WHERE relation_id LIKE :prefix_pattern AND workspace = :workspace
+    """,
+    "search_chunk_by_prefix": """
+        SELECT chunk_id as id, content, tokens, chunk_order_index, full_doc_id
+        FROM LIGHTRAG_DOC_CHUNKS
+        WHERE chunk_id LIKE :prefix_pattern AND workspace = :workspace
     """,
 }

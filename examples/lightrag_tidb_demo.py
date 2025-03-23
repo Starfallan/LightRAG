@@ -4,9 +4,9 @@ import os
 import numpy as np
 
 from lightrag import LightRAG, QueryParam
-from lightrag.kg.tidb_impl import TiDB
 from lightrag.llm import siliconcloud_embedding, openai_complete_if_cache
 from lightrag.utils import EmbeddingFunc
+from lightrag.kg.shared_storage import initialize_pipeline_status
 
 WORKING_DIR = "./dickens"
 
@@ -17,11 +17,11 @@ APIKEY = ""
 CHATMODEL = ""
 EMBEDMODEL = ""
 
-TIDB_HOST = ""
-TIDB_PORT = ""
-TIDB_USER = ""
-TIDB_PASSWORD = ""
-TIDB_DATABASE = "lightrag"
+os.environ["TIDB_HOST"] = ""
+os.environ["TIDB_PORT"] = ""
+os.environ["TIDB_USER"] = ""
+os.environ["TIDB_PASSWORD"] = ""
+os.environ["TIDB_DATABASE"] = "lightrag"
 
 if not os.path.exists(WORKING_DIR):
     os.mkdir(WORKING_DIR)
@@ -56,57 +56,41 @@ async def get_embedding_dim():
     return embedding_dim
 
 
+async def initialize_rag():
+    # Detect embedding dimension
+    embedding_dimension = await get_embedding_dim()
+    print(f"Detected embedding dimension: {embedding_dimension}")
+
+    # Initialize LightRAG
+    # We use TiDB DB as the KV/vector
+    rag = LightRAG(
+        enable_llm_cache=False,
+        working_dir=WORKING_DIR,
+        chunk_token_size=512,
+        llm_model_func=llm_model_func,
+        embedding_func=EmbeddingFunc(
+            embedding_dim=embedding_dimension,
+            max_token_size=512,
+            func=embedding_func,
+        ),
+        kv_storage="TiDBKVStorage",
+        vector_storage="TiDBVectorDBStorage",
+        graph_storage="TiDBGraphStorage",
+    )
+
+    await rag.initialize_storages()
+    await initialize_pipeline_status()
+
+    return rag
+
+
 async def main():
     try:
-        # Detect embedding dimension
-        embedding_dimension = await get_embedding_dim()
-        print(f"Detected embedding dimension: {embedding_dimension}")
+        # Initialize RAG instance
+        rag = await initialize_rag()
 
-        # Create TiDB DB connection
-        tidb = TiDB(
-            config={
-                "host": TIDB_HOST,
-                "port": TIDB_PORT,
-                "user": TIDB_USER,
-                "password": TIDB_PASSWORD,
-                "database": TIDB_DATABASE,
-                "workspace": "company",  # specify which docs you want to store and query
-            }
-        )
-
-        # Check if TiDB DB tables exist, if not, tables will be created
-        await tidb.check_tables()
-
-        # Initialize LightRAG
-        # We use TiDB DB as the KV/vector
-        # You can add `addon_params={"example_number": 1, "language": "Simplfied Chinese"}` to control the prompt
-        rag = LightRAG(
-            enable_llm_cache=False,
-            working_dir=WORKING_DIR,
-            chunk_token_size=512,
-            llm_model_func=llm_model_func,
-            embedding_func=EmbeddingFunc(
-                embedding_dim=embedding_dimension,
-                max_token_size=512,
-                func=embedding_func,
-            ),
-            kv_storage="TiDBKVStorage",
-            vector_storage="TiDBVectorDBStorage",
-            graph_storage="TiDBGraphStorage",
-        )
-
-        if rag.llm_response_cache:
-            rag.llm_response_cache.db = tidb
-        rag.full_docs.db = tidb
-        rag.text_chunks.db = tidb
-        rag.entities_vdb.db = tidb
-        rag.relationships_vdb.db = tidb
-        rag.chunks_vdb.db = tidb
-        rag.chunk_entity_relation_graph.db = tidb
-
-        # Extract and Insert into LightRAG storage
-        with open("./dickens/demo.txt", "r", encoding="utf-8") as f:
-            await rag.ainsert(f.read())
+        with open("./book.txt", "r", encoding="utf-8") as f:
+            rag.insert(f.read())
 
         # Perform search in different modes
         modes = ["naive", "local", "global", "hybrid"]

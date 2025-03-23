@@ -1,27 +1,34 @@
 import asyncio
 from dataclasses import dataclass
-from typing import Union
+from typing import Any, final
 import numpy as np
-from chromadb import HttpClient
-from chromadb.config import Settings
+
 from lightrag.base import BaseVectorStorage
 from lightrag.utils import logger
+import pipmaster as pm
+
+if not pm.is_installed("chromadb"):
+    pm.install("chromadb")
+
+from chromadb import HttpClient, PersistentClient
+from chromadb.config import Settings
 
 
+@final
 @dataclass
 class ChromaVectorDBStorage(BaseVectorStorage):
     """ChromaDB vector storage implementation."""
 
-    cosine_better_than_threshold: float = 0.2
-
     def __post_init__(self):
         try:
-            # Use global config value if specified, otherwise use default
-            self.cosine_better_than_threshold = self.global_config.get(
-                "cosine_better_than_threshold", self.cosine_better_than_threshold
-            )
-
             config = self.global_config.get("vector_db_storage_cls_kwargs", {})
+            cosine_threshold = config.get("cosine_better_than_threshold")
+            if cosine_threshold is None:
+                raise ValueError(
+                    "cosine_better_than_threshold must be specified in vector_db_storage_cls_kwargs"
+                )
+            self.cosine_better_than_threshold = cosine_threshold
+
             user_collection_settings = config.get("collection_settings", {})
             # Default HNSW index settings for ChromaDB
             default_collection_settings = {
@@ -47,31 +54,43 @@ class ChromaVectorDBStorage(BaseVectorStorage):
                 **user_collection_settings,
             }
 
-            auth_provider = config.get(
-                "auth_provider", "chromadb.auth.token_authn.TokenAuthClientProvider"
-            )
-            auth_credentials = config.get("auth_token", "secret-token")
-            headers = {}
+            local_path = config.get("local_path", None)
+            if local_path:
+                self._client = PersistentClient(
+                    path=local_path,
+                    settings=Settings(
+                        allow_reset=True,
+                        anonymized_telemetry=False,
+                    ),
+                )
+            else:
+                auth_provider = config.get(
+                    "auth_provider", "chromadb.auth.token_authn.TokenAuthClientProvider"
+                )
+                auth_credentials = config.get("auth_token", "secret-token")
+                headers = {}
 
-            if "token_authn" in auth_provider:
-                headers = {
-                    config.get("auth_header_name", "X-Chroma-Token"): auth_credentials
-                }
-            elif "basic_authn" in auth_provider:
-                auth_credentials = config.get("auth_credentials", "admin:admin")
+                if "token_authn" in auth_provider:
+                    headers = {
+                        config.get(
+                            "auth_header_name", "X-Chroma-Token"
+                        ): auth_credentials
+                    }
+                elif "basic_authn" in auth_provider:
+                    auth_credentials = config.get("auth_credentials", "admin:admin")
 
-            self._client = HttpClient(
-                host=config.get("host", "localhost"),
-                port=config.get("port", 8000),
-                headers=headers,
-                settings=Settings(
-                    chroma_api_impl="rest",
-                    chroma_client_auth_provider=auth_provider,
-                    chroma_client_auth_credentials=auth_credentials,
-                    allow_reset=True,
-                    anonymized_telemetry=False,
-                ),
-            )
+                self._client = HttpClient(
+                    host=config.get("host", "localhost"),
+                    port=config.get("port", 8000),
+                    headers=headers,
+                    settings=Settings(
+                        chroma_api_impl="rest",
+                        chroma_client_auth_provider=auth_provider,
+                        chroma_client_auth_credentials=auth_credentials,
+                        allow_reset=True,
+                        anonymized_telemetry=False,
+                    ),
+                )
 
             self._collection = self._client.get_or_create_collection(
                 name=self.namespace,
@@ -88,10 +107,10 @@ class ChromaVectorDBStorage(BaseVectorStorage):
             logger.error(f"ChromaDB initialization failed: {str(e)}")
             raise
 
-    async def upsert(self, data: dict[str, dict]):
+    async def upsert(self, data: dict[str, dict[str, Any]]) -> None:
+        logger.info(f"Inserting {len(data)} to {self.namespace}")
         if not data:
-            logger.warning("Empty data provided to vector DB")
-            return []
+            return
 
         try:
             ids = list(data.keys())
@@ -137,12 +156,16 @@ class ChromaVectorDBStorage(BaseVectorStorage):
             logger.error(f"Error during ChromaDB upsert: {str(e)}")
             raise
 
-    async def query(self, query: str, top_k=5) -> Union[dict, list[dict]]:
+    async def query(
+        self, query: str, top_k: int, ids: list[str] | None = None
+    ) -> list[dict[str, Any]]:
         try:
             embedding = await self.embedding_func([query])
 
             results = self._collection.query(
-                query_embeddings=embedding.tolist(),
+                query_embeddings=embedding.tolist()
+                if not isinstance(embedding, list)
+                else embedding,
                 n_results=top_k * 2,  # Request more results to allow for filtering
                 include=["metadatas", "distances", "documents"],
             )
@@ -167,6 +190,148 @@ class ChromaVectorDBStorage(BaseVectorStorage):
             logger.error(f"Error during ChromaDB query: {str(e)}")
             raise
 
-    async def index_done_callback(self):
+    async def index_done_callback(self) -> None:
         # ChromaDB handles persistence automatically
         pass
+
+    async def delete_entity(self, entity_name: str) -> None:
+        """Delete an entity by its ID.
+
+        Args:
+            entity_name: The ID of the entity to delete
+        """
+        try:
+            logger.info(f"Deleting entity with ID {entity_name} from {self.namespace}")
+            self._collection.delete(ids=[entity_name])
+        except Exception as e:
+            logger.error(f"Error during entity deletion: {str(e)}")
+            raise
+
+    async def delete_entity_relation(self, entity_name: str) -> None:
+        """Delete an entity and its relations by ID.
+        In vector DB context, this is equivalent to delete_entity.
+
+        Args:
+            entity_name: The ID of the entity to delete
+        """
+        await self.delete_entity(entity_name)
+
+    async def delete(self, ids: list[str]) -> None:
+        """Delete vectors with specified IDs
+
+        Args:
+            ids: List of vector IDs to be deleted
+        """
+        try:
+            logger.info(f"Deleting {len(ids)} vectors from {self.namespace}")
+            self._collection.delete(ids=ids)
+            logger.debug(
+                f"Successfully deleted {len(ids)} vectors from {self.namespace}"
+            )
+        except Exception as e:
+            logger.error(f"Error while deleting vectors from {self.namespace}: {e}")
+            raise
+
+    async def search_by_prefix(self, prefix: str) -> list[dict[str, Any]]:
+        """Search for records with IDs starting with a specific prefix.
+
+        Args:
+            prefix: The prefix to search for in record IDs
+
+        Returns:
+            List of records with matching ID prefixes
+        """
+        try:
+            # Get all records from the collection
+            # Since ChromaDB doesn't directly support prefix search on IDs,
+            # we'll get all records and filter in Python
+            results = self._collection.get(
+                include=["metadatas", "documents", "embeddings"]
+            )
+
+            matching_records = []
+
+            # Filter records where ID starts with the prefix
+            for i, record_id in enumerate(results["ids"]):
+                if record_id.startswith(prefix):
+                    matching_records.append(
+                        {
+                            "id": record_id,
+                            "content": results["documents"][i],
+                            "vector": results["embeddings"][i],
+                            **results["metadatas"][i],
+                        }
+                    )
+
+            logger.debug(
+                f"Found {len(matching_records)} records with prefix '{prefix}'"
+            )
+            return matching_records
+
+        except Exception as e:
+            logger.error(f"Error during prefix search in ChromaDB: {str(e)}")
+            raise
+
+    async def get_by_id(self, id: str) -> dict[str, Any] | None:
+        """Get vector data by its ID
+
+        Args:
+            id: The unique identifier of the vector
+
+        Returns:
+            The vector data if found, or None if not found
+        """
+        try:
+            # Query the collection for a single vector by ID
+            result = self._collection.get(
+                ids=[id], include=["metadatas", "embeddings", "documents"]
+            )
+
+            if not result or not result["ids"] or len(result["ids"]) == 0:
+                return None
+
+            # Format the result to match the expected structure
+            return {
+                "id": result["ids"][0],
+                "vector": result["embeddings"][0],
+                "content": result["documents"][0],
+                **result["metadatas"][0],
+            }
+        except Exception as e:
+            logger.error(f"Error retrieving vector data for ID {id}: {e}")
+            return None
+
+    async def get_by_ids(self, ids: list[str]) -> list[dict[str, Any]]:
+        """Get multiple vector data by their IDs
+
+        Args:
+            ids: List of unique identifiers
+
+        Returns:
+            List of vector data objects that were found
+        """
+        if not ids:
+            return []
+
+        try:
+            # Query the collection for multiple vectors by IDs
+            result = self._collection.get(
+                ids=ids, include=["metadatas", "embeddings", "documents"]
+            )
+
+            if not result or not result["ids"] or len(result["ids"]) == 0:
+                return []
+
+            # Format the results to match the expected structure
+            return [
+                {
+                    "id": result["ids"][i],
+                    "vector": result["embeddings"][i],
+                    "content": result["documents"][i],
+                    **result["metadatas"][i],
+                }
+                for i in range(len(result["ids"]))
+            ]
+        except Exception as e:
+            logger.error(f"Error retrieving vector data for IDs {ids}: {e}")
+            return []

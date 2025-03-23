@@ -13,11 +13,11 @@ from pathlib import Path
 import asyncio
 import nest_asyncio
 from lightrag import LightRAG, QueryParam
-from lightrag.llm import openai_complete_if_cache, openai_embedding
+from lightrag.llm.openai import openai_complete_if_cache, openai_embed
 from lightrag.utils import EmbeddingFunc
 import numpy as np
+from lightrag.kg.shared_storage import initialize_pipeline_status
 
-from lightrag.kg.oracle_impl import OracleDB
 
 print(os.getcwd())
 script_directory = Path(__file__).resolve().parent.parent
@@ -48,6 +48,14 @@ print(f"EMBEDDING_MAX_TOKEN_SIZE: {EMBEDDING_MAX_TOKEN_SIZE}")
 if not os.path.exists(WORKING_DIR):
     os.mkdir(WORKING_DIR)
 
+os.environ["ORACLE_USER"] = ""
+os.environ["ORACLE_PASSWORD"] = ""
+os.environ["ORACLE_DSN"] = ""
+os.environ["ORACLE_CONFIG_DIR"] = "path_to_config_dir"
+os.environ["ORACLE_WALLET_LOCATION"] = "path_to_wallet_location"
+os.environ["ORACLE_WALLET_PASSWORD"] = "wallet_password"
+os.environ["ORACLE_WORKSPACE"] = "company"
+
 
 async def llm_model_func(
     prompt, system_prompt=None, history_messages=[], keyword_extraction=False, **kwargs
@@ -64,7 +72,7 @@ async def llm_model_func(
 
 
 async def embedding_func(texts: list[str]) -> np.ndarray:
-    return await openai_embedding(
+    return await openai_embed(
         texts,
         model=EMBEDDING_MODEL,
         api_key=APIKEY,
@@ -89,23 +97,8 @@ async def init():
     # We storage data in unified tables, so we need to set a `workspace` parameter to specify which docs we want to store and query
     # Below is an example of how to connect to Oracle Autonomous Database on Oracle Cloud
 
-    oracle_db = OracleDB(
-        config={
-            "user": "",
-            "password": "",
-            "dsn": "",
-            "config_dir": "path_to_config_dir",
-            "wallet_location": "path_to_wallet_location",
-            "wallet_password": "wallet_password",
-            "workspace": "company",
-        }  # specify which docs you want to store and query
-    )
-
-    # Check if Oracle DB tables exist, if not, tables will be created
-    await oracle_db.check_tables()
     # Initialize LightRAG
     # We use Oracle DB as the KV/vector/graph storage
-    # You can add `addon_params={"example_number": 1, "language": "Simplfied Chinese"}` to control the prompt
     rag = LightRAG(
         enable_llm_cache=False,
         working_dir=WORKING_DIR,
@@ -121,10 +114,8 @@ async def init():
         vector_storage="OracleVectorDBStorage",
     )
 
-    # Setthe KV/vector/graph storage's `db` property, so all operation will use same connection pool
-    rag.graph_storage_cls.db = oracle_db
-    rag.key_string_value_json_storage_cls.db = oracle_db
-    rag.vector_db_storage_cls.db = oracle_db
+    await rag.initialize_storages()
+    await initialize_pipeline_status()
 
     return rag
 
@@ -269,7 +260,8 @@ if __name__ == "__main__":
 # curl -X POST "http://127.0.0.1:8020/insert" -H "Content-Type: application/json" -d '{"text": "your text here"}'
 
 # 3. Insert file:
-# curl -X POST "http://127.0.0.1:8020/insert_file" -H "Content-Type: application/json" -d '{"file_path": "path/to/your/file.txt"}'
+# curl -X POST "http://127.0.0.1:8020/insert_file" -H "Content-Type: multipart/form-data" -F "file=@path/to/your/file.txt"
+
 
 # 4. Health check:
 # curl -X GET "http://127.0.0.1:8020/health"

@@ -5,9 +5,10 @@ import time
 from dotenv import load_dotenv
 
 from lightrag import LightRAG, QueryParam
-from lightrag.kg.postgres_impl import PostgreSQLDB
-from lightrag.llm import ollama_embedding, zhipu_complete
+from lightrag.llm.zhipu import zhipu_complete
+from lightrag.llm.ollama import ollama_embedding
 from lightrag.utils import EmbeddingFunc
+from lightrag.kg.shared_storage import initialize_pipeline_status
 
 load_dotenv()
 ROOT_DIR = os.environ.get("ROOT_DIR")
@@ -21,22 +22,14 @@ if not os.path.exists(WORKING_DIR):
 # AGE
 os.environ["AGE_GRAPH_NAME"] = "dickens"
 
-postgres_db = PostgreSQLDB(
-    config={
-        "host": "localhost",
-        "port": 15432,
-        "user": "rag",
-        "password": "rag",
-        "database": "rag",
-    }
-)
+os.environ["POSTGRES_HOST"] = "localhost"
+os.environ["POSTGRES_PORT"] = "15432"
+os.environ["POSTGRES_USER"] = "rag"
+os.environ["POSTGRES_PASSWORD"] = "rag"
+os.environ["POSTGRES_DATABASE"] = "rag"
 
 
-async def main():
-    await postgres_db.initdb()
-    # Check if PostgreSQL DB tables exist, if not, tables will be created
-    await postgres_db.check_tables()
-
+async def initialize_rag():
     rag = LightRAG(
         working_dir=WORKING_DIR,
         llm_model_func=zhipu_complete,
@@ -45,28 +38,29 @@ async def main():
         llm_model_max_token_size=32768,
         enable_llm_cache_for_entity_extract=True,
         embedding_func=EmbeddingFunc(
-            embedding_dim=768,
+            embedding_dim=1024,
             max_token_size=8192,
             func=lambda texts: ollama_embedding(
-                texts, embed_model="nomic-embed-text", host="http://localhost:11434"
+                texts, embed_model="bge-m3", host="http://localhost:11434"
             ),
         ),
         kv_storage="PGKVStorage",
         doc_status_storage="PGDocStatusStorage",
         graph_storage="PGGraphStorage",
         vector_storage="PGVectorStorage",
+        auto_manage_storages_states=False,
     )
-    # Set the KV/vector/graph storage's `db` property, so all operation will use same connection pool
-    rag.doc_status.db = postgres_db
-    rag.full_docs.db = postgres_db
-    rag.text_chunks.db = postgres_db
-    rag.llm_response_cache.db = postgres_db
-    rag.key_string_value_json_storage_cls.db = postgres_db
-    rag.chunks_vdb.db = postgres_db
-    rag.relationships_vdb.db = postgres_db
-    rag.entities_vdb.db = postgres_db
-    rag.graph_storage_cls.db = postgres_db
-    rag.chunk_entity_relation_graph.db = postgres_db
+
+    await rag.initialize_storages()
+    await initialize_pipeline_status()
+
+    return rag
+
+
+async def main():
+    # Initialize RAG instance
+    rag = await initialize_rag()
+
     # add embedding_func for graph database, it's deleted in commit 5661d76860436f7bf5aef2e50d9ee4a59660146c
     rag.chunk_entity_relation_graph.embedding_func = rag.embedding_func
 
