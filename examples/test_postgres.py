@@ -19,7 +19,7 @@ if not os.path.exists(WORKING_DIR):
 os.environ["AGE_GRAPH_NAME"] = "dickens"
 
 os.environ["POSTGRES_HOST"] = "localhost"
-os.environ["POSTGRES_PORT"] = "15432"
+os.environ["POSTGRES_PORT"] = "5432"
 os.environ["POSTGRES_USER"] = "rag"
 os.environ["POSTGRES_PASSWORD"] = "rag"
 os.environ["POSTGRES_DATABASE"] = "rag"

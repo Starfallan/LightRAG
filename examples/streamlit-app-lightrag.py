@@ -41,6 +41,7 @@ if "initialized" not in st.session_state:
         3. Be concise but thorough
         4. If uncertain, acknowledge limitations
         5. Format code blocks with appropriate language tags
+        6. Reply in Chinese
 
         Remember to maintain a helpful and professional tone while providing accurate information based on the context.""",
         "temperature": 0.7
@@ -80,15 +81,15 @@ sys.path.insert(0, project_root)
 
 # Import LightRAG packages
 from lightrag import LightRAG, QueryParam
-from lightrag.llm import gpt_4o_mini_complete, openai_embedding
-from lightrag.utils import EmbeddingFunc, logger, set_logger
+from lightrag.llm.openai import gpt_4o_mini_complete, openai_embed
+from lightrag.utils import EmbeddingFunc, logger, setup_logger
 
 # Configure logging
 working_dir = "./dickens"
 if not os.path.exists(working_dir):
     os.makedirs(working_dir)
     
-set_logger(os.path.join(working_dir, "lightrag.log"))
+setup_logger("lightrag", level="DEBUG", log_file_path=os.path.join(working_dir, "lightrag.log"))
 logger.setLevel(logging.DEBUG)
 
 # Rest of the imports
@@ -201,7 +202,7 @@ def get_embedding_config(model_name):
     return EmbeddingFunc(
         embedding_dim=config["dim"],
         max_token_size=config["max_tokens"],
-        func=lambda texts: openai_embedding(
+        func=lambda texts: openai_embed(
             texts,
             model=model_name,
             api_key=api_key,
