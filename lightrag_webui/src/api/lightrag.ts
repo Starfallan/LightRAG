@@ -343,10 +343,13 @@ export const insertTexts = async (texts: string[]): Promise<DocActionResponse> =
 
 export const uploadDocument = async (
   file: File,
-  onUploadProgress?: (percentCompleted: number) => void
+  onUploadProgress?: (percentCompleted: number) => void,
+  file_path?: string
 ): Promise<DocActionResponse> => {
   const formData = new FormData()
   formData.append('file', file)
+  // 添加文件路径信息，如果未提供则使用文件名
+  formData.append('file_path', file_path || file.name)
 
   const response = await axiosInstance.post('/documents/upload', formData, {
     headers: {
@@ -366,19 +369,31 @@ export const uploadDocument = async (
 
 export const batchUploadDocuments = async (
   files: File[],
-  onUploadProgress?: (fileName: string, percentCompleted: number) => void
+  onUploadProgress?: (fileName: string, percentCompleted: number) => void,
+  file_paths?: string[]
 ): Promise<DocActionResponse[]> => {
   return await Promise.all(
-    files.map(async (file) => {
-      return await uploadDocument(file, (percentCompleted) => {
-        onUploadProgress?.(file.name, percentCompleted)
-      })
+    files.map(async (file, index) => {
+      // 获取文件对应的路径，如果没有提供则使用文件名
+      const filePath = file_paths && index < file_paths.length ? file_paths[index] : file.name;
+      return await uploadDocument(
+        file, 
+        (percentCompleted) => {
+          onUploadProgress?.(file.name, percentCompleted)
+        }, 
+        filePath
+      )
     })
   )
 }
 
 export const clearDocuments = async (): Promise<DocActionResponse> => {
   const response = await axiosInstance.delete('/documents')
+  return response.data
+}
+
+export const deleteDocumentById = async (docId: string): Promise<DocActionResponse> => {
+  const response = await axiosInstance.delete(`/documents/${docId}`)
   return response.data
 }
 

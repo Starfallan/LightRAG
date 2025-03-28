@@ -908,4 +908,45 @@ def create_document_routes(
             logger.error(traceback.format_exc())
             raise HTTPException(status_code=500, detail=str(e))
 
+    @router.delete(
+        "/{doc_id}", response_model=InsertResponse, dependencies=[Depends(combined_auth)]
+    )
+    async def delete_document_by_id(doc_id: str):
+        """
+        Delete a specific document from the RAG system by its ID.
+
+        This endpoint uses adelete_by_doc_id to completely remove the document,
+        including all related chunks, entities, and relationships.
+
+        Args:
+            doc_id: The ID of the document to delete.
+
+        Returns:
+            InsertResponse: A response object containing the status and message.
+
+        Raises:
+            HTTPException: If an error occurs during the deletion process (500) or document is not found (404).
+        """
+        try:
+            # 检查文档是否存在
+            doc_status = await rag.doc_status.get_by_id(doc_id)
+            if not doc_status:
+                raise HTTPException(
+                    status_code=404, detail=f"Document with ID {doc_id} not found"
+                )
+
+            # 调用LightRAG的adelete_by_doc_id方法删除文档
+            await rag.adelete_by_doc_id(doc_id)
+            
+            return InsertResponse(
+                status="success", message=f"Document {doc_id} deleted successfully"
+            )
+        except HTTPException:
+            # 直接重新抛出HTTP异常
+            raise
+        except Exception as e:
+            logger.error(f"Error DELETE /documents/{doc_id}: {str(e)}")
+            logger.error(traceback.format_exc())
+            raise HTTPException(status_code=500, detail=str(e))
+
     return router

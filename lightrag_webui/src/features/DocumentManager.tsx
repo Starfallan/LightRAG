@@ -15,6 +15,7 @@ import { Card, CardHeader, CardTitle, CardContent, CardDescription } from '@/com
 import EmptyCard from '@/components/ui/EmptyCard'
 import UploadDocumentsDialog from '@/components/documents/UploadDocumentsDialog'
 import ClearDocumentsDialog from '@/components/documents/ClearDocumentsDialog'
+import DeleteDocumentDialog from '@/components/documents/DeleteDocumentDialog'
 
 import { getDocuments, scanNewDocuments, DocsStatusesResponse } from '@/api/lightrag'
 import { errorMessage } from '@/lib/utils'
@@ -540,6 +541,13 @@ export default function DocumentManager() {
                             <TableCell className="truncate">
                               {new Date(doc.updated_at).toLocaleString()}
                             </TableCell>
+                            <TableCell>
+                            <DeleteDocumentDialog 
+                              docId={doc.id} 
+                              docSummary={doc.content_summary}
+                              onDocumentDeleted={fetchDocuments}
+                            />
+                          </TableCell>
                           </TableRow>
                         ));
                       })}

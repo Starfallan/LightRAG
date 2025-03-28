@@ -75,32 +75,24 @@ export default function UploadDocumentsDialog() {
         await Promise.all(
           filesToUpload.map(async (file) => {
             try {
-              // Initialize upload progress
-              setProgresses((pre) => ({
-                ...pre,
-                [file.name]: 0
-              }))
-
-              const result = await uploadDocument(file, (percentCompleted: number) => {
-                console.debug(t('documentPanel.uploadDocuments.single.uploading', { name: file.name, percent: percentCompleted }))
-                setProgresses((pre) => ({
-                  ...pre,
-                  [file.name]: percentCompleted
-                }))
-              })
-
-              if (result.status === 'duplicated') {
-                uploadErrors[file.name] = t('documentPanel.uploadDocuments.fileUploader.duplicateFile')
-                setFileErrors(prev => ({
-                  ...prev,
-                  [file.name]: t('documentPanel.uploadDocuments.fileUploader.duplicateFile')
-                }))
-              } else if (result.status !== 'success') {
-                uploadErrors[file.name] = result.message
-                setFileErrors(prev => ({
-                  ...prev,
-                  [file.name]: result.message
-                }))
+              // 构建一个更好的文件路径信息，而不是使用unknown_source
+              const file_path = file.name;
+              
+              const result = await uploadDocument(
+                file, 
+                (percentCompleted: number) => {
+                  console.debug(t('documentPanel.uploadDocuments.uploading', { name: file.name, percent: percentCompleted }))
+                  setProgresses((pre) => ({
+                    ...pre,
+                    [file.name]: percentCompleted
+                  }))
+                },
+                file_path // 传递文件路径
+              )
+              if (result.status === 'success') {
+                toast.success(t('documentPanel.uploadDocuments.success', { name: file.name }))
+              } else {
+                toast.error(t('documentPanel.uploadDocuments.failed', { name: file.name, message: result.message }))
               }
             } catch (err) {
               console.error(`Upload failed for ${file.name}:`, err)
@@ -149,7 +141,7 @@ export default function UploadDocumentsDialog() {
         setIsUploading(false)
       }
     },
-    [setIsUploading, setProgresses, setFileErrors, t]
+    [setIsUploading, setProgresses, t]
   )
 
   return (
