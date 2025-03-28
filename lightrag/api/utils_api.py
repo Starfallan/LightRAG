@@ -23,18 +23,27 @@ def check_env_file():
     Check if .env file exists and handle user confirmation if needed.
     Returns True if should continue, False if should exit.
     """
-    if not os.path.exists(".env"):
+    # Get the absolute path of the current script's directory
+    current_dir = os.path.dirname(os.path.abspath(__file__))
+    env_path = os.path.join(current_dir, '.env')
+    
+    if not os.path.exists(env_path):
+        # Add debug information
         warning_msg = (
-            "Warning: .env file not found. Some features may not work properly."
+            f"Warning: .env file not found at {env_path}. "
+            "Some features may not work properly."
         )
         ASCIIColors.yellow(warning_msg)
-
-        # Check if running in interactive terminal
+        
+        # Check if running in an interactive terminal
         if sys.stdin.isatty():
             response = input("Do you want to continue? (yes/no): ")
             if response.lower() != "yes":
                 ASCIIColors.red("Server startup cancelled")
                 return False
+    else:
+        ASCIIColors.green(f"Found .env file at: {env_path}")
+    
     return True
 
 
