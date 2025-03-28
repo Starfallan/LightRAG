@@ -91,6 +91,7 @@ class DocStatusResponse(BaseModel):
     chunks_count: Optional[int] = None
     error: Optional[str] = None
     metadata: Optional[dict[str, Any]] = None
+    file_path: str
 
 
 class DocsStatusesResponse(BaseModel):
@@ -370,7 +371,7 @@ async def pipeline_enqueue_file(rag: LightRAG, file_path: Path) -> bool:
 
         # Insert into the RAG queue
         if content:
-            await rag.apipeline_enqueue_documents(content)
+            await rag.apipeline_enqueue_documents(content, file_paths=file_path.name)
             logger.info(f"Successfully fetched and enqueued file: {file_path.name}")
             return True
         else:
@@ -541,6 +542,7 @@ def create_document_routes(
 
         Returns:
             InsertResponse: A response object containing the upload status and a message.
+                status can be "success", "duplicated", or error is thrown.
 
         Raises:
             HTTPException: If the file type is not supported (400) or other errors occur (500).
@@ -553,6 +555,13 @@ def create_document_routes(
                 )
 
             file_path = doc_manager.input_dir / file.filename
+            # Check if file already exists
+            if file_path.exists():
+                return InsertResponse(
+                    status="duplicated",
+                    message=f"File '{file.filename}' already exists in the input directory.",
+                )
+
             with open(file_path, "wb") as buffer:
                 shutil.copyfileobj(file.file, buffer)
 
@@ -890,6 +899,7 @@ def create_document_routes(
                             chunks_count=doc_status.chunks_count,
                             error=doc_status.error,
                             metadata=doc_status.metadata,
+                            file_path=doc_status.file_path,
                         )
                     )
             return response
