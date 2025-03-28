@@ -1,0 +1,43 @@
+    "documentManager": {
+      "title": "文档管理",
+      "scanButton": "扫描",
+      "scanTooltip": "扫描文档",
+      "uploadedTitle": "已上传文档",
+      "uploadedDescription": "已上传文档列表及其状态。",
+      "emptyTitle": "无文档",
+      "emptyDescription": "尚未上传任何文档。",
+      "columns": {
+        "id": "ID",
+        "summary": "摘要",
+        "status": "状态",
+        "length": "长度",
+        "chunks": "分块数",
+        "created": "创建时间",
+        "updated": "更新时间",
+        "metadata": "元数据",
+        "actions": "操作"
+      },
+      "status": {
+        "completed": "已完成",
+        "processing": "处理中",
+        "pending": "等待中",
+        "failed": "失败"
+      },
+      "errors": {
+        "loadFailed": "加载文档失败\n{{error}}",
+        "scanFailed": "扫描文档失败\n{{error}}",
+        "scanProgressFailed": "更新扫描进度失败\n{{error}}"
+      }
+    },
+    "deleteDocument": {
+      "tooltip": "删除文档",
+      "title": "删除文档",
+      "confirm": "您确定要删除文档 {{id}} 吗？此操作不可撤销，将删除所有相关实体和关系。",
+      "summary": "文档摘要",
+      "confirmButton": "删除",
+      "cancelButton": "取消",
+      "deletingButton": "删除中...",
+      "success": "文档 {{id}} 已成功删除",
+      "failed": "删除文档 {{id}} 失败：\n{{message}}",
+      "error": "删除文档 {{id}} 出错：\n{{error}}"
+    },

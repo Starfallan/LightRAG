@@ -15,6 +15,7 @@ import EmptyCard from '@/components/ui/EmptyCard'
 import Text from '@/components/ui/Text'
 import UploadDocumentsDialog from '@/components/documents/UploadDocumentsDialog'
 import ClearDocumentsDialog from '@/components/documents/ClearDocumentsDialog'
+import DeleteDocumentDialog from '@/components/documents/DeleteDocumentDialog'
 
 import { getDocuments, scanNewDocuments, DocsStatusesResponse } from '@/api/lightrag'
 import { errorMessage } from '@/lib/utils'
@@ -130,6 +131,7 @@ export default function DocumentManager() {
                     <TableHead>{t('documentPanel.documentManager.columns.created')}</TableHead>
                     <TableHead>{t('documentPanel.documentManager.columns.updated')}</TableHead>
                     <TableHead>{t('documentPanel.documentManager.columns.metadata')}</TableHead>
+                    <TableHead className="w-10">{t('documentPanel.documentManager.columns.actions')}</TableHead>
                   </TableRow>
                 </TableHeader>
                 <TableBody className="text-sm">
@@ -169,6 +171,13 @@ export default function DocumentManager() {
                         </TableCell>
                         <TableCell className="max-w-xs truncate">
                           {doc.metadata ? JSON.stringify(doc.metadata) : '-'}
+                        </TableCell>
+                        <TableCell>
+                          <DeleteDocumentDialog 
+                            docId={doc.id} 
+                            docSummary={doc.content_summary}
+                            onDocumentDeleted={fetchDocuments}
+                          />
                         </TableCell>
                       </TableRow>
                     ))

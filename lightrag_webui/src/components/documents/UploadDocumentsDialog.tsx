@@ -30,13 +30,20 @@ export default function UploadDocumentsDialog() {
         await Promise.all(
           filesToUpload.map(async (file) => {
             try {
-              const result = await uploadDocument(file, (percentCompleted: number) => {
-                console.debug(t('documentPanel.uploadDocuments.uploading', { name: file.name, percent: percentCompleted }))
-                setProgresses((pre) => ({
-                  ...pre,
-                  [file.name]: percentCompleted
-                }))
-              })
+              // 构建一个更好的文件路径信息，而不是使用unknown_source
+              const file_path = file.name;
+              
+              const result = await uploadDocument(
+                file, 
+                (percentCompleted: number) => {
+                  console.debug(t('documentPanel.uploadDocuments.uploading', { name: file.name, percent: percentCompleted }))
+                  setProgresses((pre) => ({
+                    ...pre,
+                    [file.name]: percentCompleted
+                  }))
+                },
+                file_path // 传递文件路径
+              )
               if (result.status === 'success') {
                 toast.success(t('documentPanel.uploadDocuments.success', { name: file.name }))
               } else {
@@ -54,7 +61,7 @@ export default function UploadDocumentsDialog() {
         // setOpen(false)
       }
     },
-    [setIsUploading, setProgresses]
+    [setIsUploading, setProgresses, t]
   )
 
   return (
