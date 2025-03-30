@@ -111,6 +111,18 @@
       "showFileNameTooltip": "Show file name",
       "hideFileNameTooltip": "Hide file name"
     },
+    "deleteDocument": {
+      "tooltip": "Delete document",
+      "title": "Delete Document",
+      "confirm": "Are you sure you want to delete document {{id}}? This action cannot be undone and will remove all related entities and relationships.",
+      "summary": "Document summary",
+      "confirmButton": "Delete",
+      "cancelButton": "Cancel",
+      "deletingButton": "Deleting...",
+      "success": "Document {{id}} has been successfully deleted",
+      "failed": "Failed to delete document {{id}}:\n{{message}}",
+      "error": "Error deleting document {{id}}:\n{{error}}"
+    },
     "pipelineStatus": {
       "title": "Pipeline Status",
       "busy": "Pipeline Busy",

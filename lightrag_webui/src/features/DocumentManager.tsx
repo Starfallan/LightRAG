@@ -475,6 +475,9 @@ export default function DocumentManager() {
                             )}
                           </div>
                         </TableHead>
+                        <TableHead className="text-center w-10">
+                          {t('documentPanel.documentManager.columns.actions')}
+                        </TableHead>
                       </TableRow>
                     </TableHeader>
                     <TableBody className="text-sm overflow-auto">
@@ -541,7 +544,7 @@ export default function DocumentManager() {
                             <TableCell className="truncate">
                               {new Date(doc.updated_at).toLocaleString()}
                             </TableCell>
-                            <TableCell>
+                            <TableCell className="text-center w-10">
                             <DeleteDocumentDialog 
                               docId={doc.id} 
                               docSummary={doc.content_summary}

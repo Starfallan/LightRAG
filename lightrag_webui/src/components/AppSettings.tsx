@@ -1,6 +1,6 @@
 import { useState, useCallback } from 'react'
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/Popover'
-import Button from '@/components/ui/Button'
+import Button  from '@/components/ui/Button'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/Select'
 import { useSettingsStore } from '@/stores/settings'
 import { PaletteIcon } from 'lucide-react'

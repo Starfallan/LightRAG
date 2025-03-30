@@ -68,3 +68,7 @@ test_*
 # Cline files
 memory-bank/
 .history/
+
+#webui生成的js
+lightrag/api/webui/assets/
+

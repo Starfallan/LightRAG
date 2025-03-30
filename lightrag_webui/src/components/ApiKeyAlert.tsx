@@ -8,7 +8,7 @@ import {
   AlertDialogTitle
 } from '@/components/ui/AlertDialog'
 import Button from '@/components/ui/Button'
-import Input from '@/components/ui/Input'
+import { Input } from '@/components/ui/Input'
 import { useSettingsStore } from '@/stores/settings'
 import { useBackendState } from '@/stores/state'
 import { InvalidApiKeyError, RequireApiKeError } from '@/api/lightrag'

@@ -2,7 +2,7 @@ import { ChevronDown, ChevronUp } from 'lucide-react'
 import { forwardRef, useCallback, useEffect, useState } from 'react'
 import { NumericFormat, NumericFormatProps } from 'react-number-format'
 import Button from '@/components/ui/Button'
-import Input from '@/components/ui/Input'
+import { Input } from '@/components/ui/Input'
 import { cn } from '@/lib/utils'
 
 export interface NumberInputProps extends Omit<NumericFormatProps, 'value' | 'onValueChange'> {

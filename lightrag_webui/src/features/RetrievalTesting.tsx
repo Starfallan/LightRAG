@@ -1,4 +1,4 @@
-import Input from '@/components/ui/Input'
+import { Input } from '@/components/ui/Input'
 import Button from '@/components/ui/Button'
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { queryText, queryTextStream, Message } from '@/api/lightrag'

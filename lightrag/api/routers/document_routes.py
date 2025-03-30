@@ -930,11 +930,13 @@ def create_document_routes(
         try:
             # 检查文档是否存在
             doc_status = await rag.doc_status.get_by_id(doc_id)
+            logger.info(f"Attempting to delete document with ID: {doc_id}")
+            logger.info(f"Document status: {doc_status}")
+            
+            # 即使找不到文档也尝试删除，增加容错性
             if not doc_status:
-                raise HTTPException(
-                    status_code=404, detail=f"Document with ID {doc_id} not found"
-                )
-
+                logger.warning(f"Document with ID {doc_id} not found in status storage, but will attempt deletion anyway")
+            
             # 调用LightRAG的adelete_by_doc_id方法删除文档
             await rag.adelete_by_doc_id(doc_id)
             

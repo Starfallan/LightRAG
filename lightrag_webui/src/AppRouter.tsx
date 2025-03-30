@@ -6,6 +6,7 @@ import { Toaster } from 'sonner'
 import App from './App'
 import LoginPage from '@/features/LoginPage'
 import ThemeProvider from '@/components/ThemeProvider'
+import { KnowledgeBase } from './features/knowledge/KnowledgeBase'
 
 const AppContent = () => {
   const [initializing, setInitializing] = useState(true)
@@ -67,6 +68,7 @@ const AppContent = () => {
   return (
     <Routes>
       <Route path="/login" element={<LoginPage />} />
+      <Route path="/knowledge" element={<KnowledgeBase />} />
       <Route
         path="/*"
         element={isAuthenticated ? <App /> : null}

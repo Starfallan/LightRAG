@@ -1,7 +1,7 @@
 import { useCallback } from 'react'
 import { QueryMode, QueryRequest } from '@/api/lightrag'
 import Text from '@/components/ui/Text'
-import Input from '@/components/ui/Input'
+import { Input } from '@/components/ui/Input'
 import Checkbox from '@/components/ui/Checkbox'
 import NumberInput from '@/components/ui/NumberInput'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/Card'
